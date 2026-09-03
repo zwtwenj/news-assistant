@@ -1,0 +1,33 @@
+# 开发环境基础设施：仅 PG + Redis，后端/前端本地运行
+# prod 全量 compose（web/workers/beat/nginx 等）在 M1 后期补充到 deploy/
+services:
+  postgres:
+    # 注：docker.io 直连不可达，16-alpine 镜像源拉取不稳定，暂用本地已有的 15-alpine；
+    # prod 环境（服务器）不受此影响，届时按 plan §11 用 postgres:16
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: news
+      POSTGRES_PASSWORD: news
+      POSTGRES_DB: news
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U news"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

@@ -1,0 +1,163 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import { ApiError, api } from "@/lib/api";
+import { useAuth } from "@/providers/auth";
+
+type Captcha = { captcha_id: string; image_base64: string };
+
+export default function LoginPage() {
+  const router = useRouter();
+  const { reload } = useAuth();
+
+  const [phone, setPhone] = useState("");
+  const [captcha, setCaptcha] = useState<Captcha | null>(null);
+  const [captchaCode, setCaptchaCode] = useState("");
+  const [smsCode, setSmsCode] = useState("");
+  const [countdown, setCountdown] = useState(0);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetchCaptcha = useCallback(async () => {
+    setCaptchaCode("");
+    setCaptcha(await api<Captcha>("/auth/captcha"));
+  }, []);
+
+  useEffect(() => {
+    void fetchCaptcha();
+    return () => {
+      if (timer.current) clearInterval(timer.current);
+    };
+  }, [fetchCaptcha]);
+
+  useEffect(() => {
+    if (countdown <= 0 && timer.current) {
+      clearInterval(timer.current);
+      timer.current = null;
+    }
+  }, [countdown]);
+
+  const phoneValid = /^1[3-9]\d{9}$/.test(phone);
+
+  const handleSend = async () => {
+    if (!phoneValid || !captcha || !captchaCode || sending) return;
+    setSending(true);
+    setError("");
+    try {
+      await api("/auth/sms/send", {
+        method: "POST",
+        body: JSON.stringify({
+          phone,
+          captcha_id: captcha.captcha_id,
+          captcha_code: captchaCode,
+        }),
+      });
+      setCountdown(60);
+      timer.current = setInterval(() => setCountdown((c) => c - 1), 1000);
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.message : "发送失败，请重试";
+      setError(msg);
+      // 图形验证码错误/过期：自动刷新
+      if (e instanceof ApiError && e.status === 401) void fetchCaptcha();
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleLogin = async () => {
+    if (!phoneValid || !/^\d{6}$/.test(smsCode)) return;
+    setError("");
+    try {
+      await api("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ phone, code: smsCode }),
+      });
+      await reload();
+      // 登录后回跳原页面（守卫跳转时携带 ?next=）
+      const next = new URLSearchParams(window.location.search).get("next");
+      router.push(next && next.startsWith("/") ? next : "/");
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "登录失败，请重试");
+    }
+  };
+
+  return (
+    <main className="flex min-h-screen flex-col items-center justify-center bg-zinc-50 px-4 dark:bg-black">
+      <div className="w-full max-w-sm space-y-5 rounded-xl border border-solid border-black/[.08] bg-white p-8 dark:border-white/[.145] dark:bg-black">
+        <div className="text-center">
+          <h1 className="text-2xl font-semibold text-black dark:text-zinc-50">登录 / 注册</h1>
+          <p className="mt-1 text-sm text-zinc-500">未注册的手机号将自动创建账号</p>
+        </div>
+
+        <label className="block space-y-1">
+          <span className="text-sm text-zinc-600 dark:text-zinc-400">手机号</span>
+          <input
+            value={phone}
+            onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 11))}
+            placeholder="请输入手机号"
+            inputMode="numeric"
+            className="w-full rounded-md border border-solid border-black/[.1] bg-transparent px-3 py-2 text-black outline-none focus:border-black dark:border-white/[.2] dark:text-zinc-50 dark:focus:border-zinc-50"
+          />
+        </label>
+
+        <label className="block space-y-1">
+          <span className="text-sm text-zinc-600 dark:text-zinc-400">图形验证码</span>
+          <div className="flex gap-2">
+            <input
+              value={captchaCode}
+              onChange={(e) => setCaptchaCode(e.target.value.toUpperCase().slice(0, 4))}
+              placeholder="输入右侧字符"
+              className="w-full rounded-md border border-solid border-black/[.1] bg-transparent px-3 py-2 text-black outline-none focus:border-black dark:border-white/[.2] dark:text-zinc-50 dark:focus:border-zinc-50"
+            />
+            {captcha ? (
+              // eslint-disable-next-line @next/next/no-img-element -- base64 动态图，非静态资源
+              <img
+                src={captcha.image_base64}
+                alt="图形验证码，点击刷新"
+                onClick={() => void fetchCaptcha()}
+                className="h-10 cursor-pointer rounded-md"
+              />
+            ) : (
+              <div className="h-10 w-32 animate-pulse rounded-md bg-zinc-200 dark:bg-zinc-800" />
+            )}
+          </div>
+        </label>
+
+        <label className="block space-y-1">
+          <span className="text-sm text-zinc-600 dark:text-zinc-400">短信验证码</span>
+          <div className="flex gap-2">
+            <input
+              value={smsCode}
+              onChange={(e) => setSmsCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder="6 位数字"
+              inputMode="numeric"
+              className="w-full rounded-md border border-solid border-black/[.1] bg-transparent px-3 py-2 text-black outline-none focus:border-black dark:border-white/[.2] dark:text-zinc-50 dark:focus:border-zinc-50"
+            />
+            <button
+              type="button"
+              disabled={!phoneValid || !captchaCode || countdown > 0 || sending}
+              onClick={() => void handleSend()}
+              className="w-28 shrink-0 rounded-md border border-solid border-black/[.08] text-sm disabled:opacity-40 dark:border-white/[.145]"
+            >
+              {countdown > 0 ? `${countdown}s` : sending ? "发送中…" : "获取验证码"}
+            </button>
+          </div>
+        </label>
+
+        {error && <p className="text-center text-sm text-red-600">{error}</p>}
+
+        <button
+          type="button"
+          disabled={!phoneValid || !/^\d{6}$/.test(smsCode)}
+          onClick={() => void handleLogin()}
+          className="w-full rounded-md bg-foreground py-2.5 font-medium text-background disabled:opacity-40"
+        >
+          登录
+        </button>
+      </div>
+    </main>
+  );
+}

@@ -1,0 +1,25 @@
+# ===== 密钥与本地环境（永不入库）=====
+.env
+*.env
+env.local
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# ===== Node =====
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# ===== 其他 =====
+.DS_Store
+*.log
+.idea/
+.vscode/

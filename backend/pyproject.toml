@@ -1,0 +1,45 @@
+[project]
+name = "news-assistant-backend"
+version = "0.1.0"
+description = "新闻助手后端：新闻采集 + 播客生成 + AI 助手"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic-settings>=2.6",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+    "alembic>=1.14",
+    "celery[redis]>=5.4",
+    "redis>=5.2",
+    "loguru>=0.7",
+    "httpx>=0.28",
+    "openai>=1.60",
+    "alibabacloud-dypnsapi20170525",
+    "pyjwt>=2.13.0",
+    "captcha>=0.7.1",
+    "pymilvus>=3.0.1",
+    "feedparser>=6.0.14",
+    "trafilatura>=2.2.0",
+    "langfuse>=4.15.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
