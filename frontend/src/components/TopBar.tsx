@@ -15,8 +15,8 @@ export default function TopBar() {
   };
 
   return (
-    <header className="border-b border-solid border-black/[.06] dark:border-white/[.12]">
-      <div className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-3">
+    <header className="sticky top-0 z-10 border-b border-solid border-black/[.06] bg-white dark:border-white/[.12] dark:bg-black">
+      <div className="flex w-full items-center justify-between px-6 py-3">
         <Link href="/" className="text-lg font-semibold text-black dark:text-zinc-50">
           新闻助手
         </Link>
