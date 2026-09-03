@@ -22,6 +22,7 @@ dependencies = [
     "feedparser>=6.0.14",
     "trafilatura>=2.2.0",
     "langfuse>=4.15.1",
+    "imageio-ffmpeg>=0.6.0",
 ]
 
 [dependency-groups]

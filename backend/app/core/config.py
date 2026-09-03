@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     milvus_uri: str = ""
     milvus_token: str = ""
 
+    # 播客合成
+    ffmpeg_path: str = "ffmpeg"  # Windows 本地开发填 backend/bin/ffmpeg.exe 绝对路径
+    media_dir: str = "media"  # 本地存储根（相对 backend/），静态服务 /media/*
+
 
 @lru_cache
 def get_settings() -> Settings:

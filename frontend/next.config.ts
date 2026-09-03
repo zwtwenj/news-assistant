@@ -10,6 +10,11 @@ const nextConfig: NextConfig = {
         source: "/api/:path*",
         destination: `${BACKEND_URL}/api/:path*`,
       },
+      {
+        // 播客音频等本地存储产物（生产切 CDN/OSS 后移除）
+        source: "/media/:path*",
+        destination: `${BACKEND_URL}/media/:path*`,
+      },
     ];
   },
 };

@@ -19,5 +19,5 @@ export function middleware(request: NextRequest) {
 export const config = {
   // 注意：matcher 必须是静态字面量（Next 编译期解析），
   // 新增受保护前缀时同步更新 lib/auth-guard.ts 与此处
-  matcher: ["/account/:path*"],
+  matcher: ["/account/:path*", "/news/:path*", "/podcasts/:path*"],
 };

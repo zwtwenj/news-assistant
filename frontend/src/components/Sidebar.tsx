@@ -6,8 +6,9 @@ import { usePathname } from "next/navigation";
 const MENU: { href: string; label: string; icon: string; disabled?: boolean }[] = [
   { href: "/", label: "数据总览", icon: "📊" },
   { href: "/news", label: "新闻列表", icon: "📰" },
+  { href: "/podcasts", label: "播客生成", icon: "🎙️" },
+  { href: "/podcasts/history", label: "我的播客", icon: "🎧" },
   { href: "/account", label: "我的账号", icon: "👤" },
-  { href: "", label: "播客生成", icon: "🎙️", disabled: true }, // M2
 ];
 
 export default function Sidebar() {

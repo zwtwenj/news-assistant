@@ -9,7 +9,7 @@ celery_app = Celery(
     "news_assistant",
     broker=settings.redis_url,
     backend=settings.redis_url,
-    include=["app.tasks.maintenance", "app.tasks.news"],
+    include=["app.tasks.maintenance", "app.tasks.news", "app.tasks.podcast"],
 )
 
 celery_app.conf.update(
@@ -29,6 +29,10 @@ celery_app.conf.update(
         "app.tasks.news.analyze_articles": {"queue": "llm"},
         "app.tasks.news.embed_articles": {"queue": "llm"},
         "app.tasks.news.run_daily_pipeline": {"queue": "default"},
+        # 播客合成
+        "app.tasks.podcast.gen_script": {"queue": "llm"},
+        "app.tasks.podcast.synth_tts": {"queue": "media"},
+        "app.tasks.podcast.compose_audio": {"queue": "media"},
         # 通用通配（后续模块沿用）
         "app.tasks.crawl.*": {"queue": "crawl"},
         "app.tasks.llm.*": {"queue": "llm"},
