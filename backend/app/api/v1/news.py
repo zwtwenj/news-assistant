@@ -1,7 +1,7 @@
-from fastapi import APIRouter
-from sqlalchemy import func, text
+from fastapi import APIRouter, Query
+from sqlalchemy import func, or_, text
 
-from app.api.deps import DB
+from app.api.deps import DB, CurrentUser
 from app.models.article import Article
 from app.models.feed import Feed
 
@@ -75,4 +75,52 @@ def news_stats(db: DB) -> dict:
         "last_fetched_at": _fmt(last_fetched),
         "by_day": [{"date": str(r.day), "count": r.count} for r in by_day_rows],
         "by_category": [{"tag": r.tag, "count": r.count} for r in by_category_rows],
+    }
+
+
+@router.get("/articles")
+def list_articles(
+    db: DB,
+    _user: CurrentUser,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    keyword: str = Query("", max_length=100),
+    tag: str = Query("", max_length=50),
+) -> dict:
+    """新闻列表：分页 + 关键词模糊搜索（标题/正文）+ 标签精确筛选，按发布时间倒序。"""
+    q = db.query(Article).filter(Article.deleted_at.is_(None))
+    if keyword.strip():
+        like = f"%{keyword.strip()}%"
+        q = q.filter(or_(Article.title.ilike(like), Article.content.ilike(like)))
+    if tag.strip():
+        q = q.filter(Article.tags.contains([tag.strip()]))  # jsonb @> 精确包含
+    total = q.count()
+    rows = (
+        q.order_by(Article.publish_time.desc().nulls_last(), Article.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    def _fmt(dt) -> str:  # noqa: ANN001
+        from zoneinfo import ZoneInfo
+
+        return dt.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M") if dt else ""
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [
+            {
+                "id": a.id,
+                "title": a.title,
+                "source": a.source,
+                "publish_time": _fmt(a.publish_time),
+                "summary": a.summary or (a.content or "")[:100],
+                "tags": a.tags or [],
+                "url": a.url,
+            }
+            for a in rows
+        ],
     }
