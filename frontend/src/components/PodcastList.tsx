@@ -9,6 +9,7 @@ export type Podcast = {
   mode: string;
   status: string;
   topic_prompt: string;
+  target_minutes: number;
   error: string | null;
   audio_url: string | null;
   duration_sec: number | null;
@@ -74,7 +75,9 @@ export default function PodcastList() {
               <p className="truncate font-medium text-black dark:text-zinc-50">{p.topic_prompt}</p>
               <p className="mt-1 text-xs text-zinc-400">
                 #{p.id} · {p.mode === "dual" ? "双人对谈" : "单人独白"} · 创建于 {p.created_at}
-                {p.duration_sec ? ` · ${p.duration_sec}s` : ""}
+                {p.duration_sec
+                  ? ` · 目标 ${p.target_minutes} 分钟 / 实际 ${Math.floor(p.duration_sec / 60)}分${p.duration_sec % 60}秒`
+                  : ` · 目标 ${p.target_minutes} 分钟`}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">

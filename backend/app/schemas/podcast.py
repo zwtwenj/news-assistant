@@ -1,5 +1,5 @@
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 TOPIC_MAX = 500
 PROMPT_MAX = 2000
@@ -14,6 +14,7 @@ class VoiceOut(BaseModel):
 class PodcastCreate(BaseModel):
     mode: str  # single / dual
     topic_prompt: str
+    target_minutes: int = Field(4, ge=1, le=10)  # 目标时长（分钟）：素材上限与脚本长度由它驱动
     voice_a: str
     voice_b: str | None = None
     script_prompt: str | None = None
@@ -58,6 +59,7 @@ class PodcastOut(BaseModel):
     mode: str
     status: str
     topic_prompt: str
+    target_minutes: int
     voice_a: str
     voice_b: str | None
     error: str | None

@@ -45,7 +45,8 @@ def gen_script(self, podcast_id: int) -> str:
         db.commit()
         try:
             segments = script_svc.generate_script(
-                p.mode, p.topic_prompt, p.script_prompt, p.script_prompt_a, p.script_prompt_b
+                p.mode, p.topic_prompt, p.script_prompt, p.script_prompt_a, p.script_prompt_b,
+                target_minutes=p.target_minutes,
             )
         except script_svc.ScriptError as exc:
             _fail(db, p, str(exc))  # 业务性失败（如素材不足）不重试

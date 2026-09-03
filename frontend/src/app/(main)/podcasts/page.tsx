@@ -19,6 +19,7 @@ export default function PodcastWizardPage() {
   const [promptA, setPromptA] = useState("");
   const [promptB, setPromptB] = useState("");
   const [topic, setTopic] = useState("");
+  const [targetMinutes, setTargetMinutes] = useState(4);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -39,10 +40,17 @@ export default function PodcastWizardPage() {
         method: "POST",
         body: JSON.stringify(
           mode === "single"
-            ? { mode, topic_prompt: topic, voice_a: voiceA, script_prompt: scriptPrompt }
+            ? {
+                mode,
+                topic_prompt: topic,
+                target_minutes: targetMinutes,
+                voice_a: voiceA,
+                script_prompt: scriptPrompt,
+              }
             : {
                 mode,
                 topic_prompt: topic,
+                target_minutes: targetMinutes,
                 voice_a: voiceA,
                 voice_b: voiceB,
                 script_prompt_a: promptA,
@@ -174,19 +182,36 @@ export default function PodcastWizardPage() {
 
         {step === 2 && (
           <div className="max-w-xl space-y-4">
-            <div>
-              <label className={labelCls}>话题提示词（想播点什么，将检索近 7 天相关新闻）</label>
-              <textarea
-                value={topic}
-                onChange={(e) => setTopic(e.target.value)}
-                rows={3}
-                placeholder="例如：生成一份有关最近天气的播客"
-                className={inputCls}
-              />
-              <p className="mt-1 text-xs text-zinc-400">
-                每小时限 3 次、每天限 10 次；点击生成后立即排队（列表中可见），全流程约 1~3 分钟
-              </p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className={labelCls}>播客时长</label>
+                <select
+                  value={targetMinutes}
+                  onChange={(e) => setTargetMinutes(Number(e.target.value))}
+                  className={inputCls}
+                >
+                  <option value={2}>短（1~2 分钟）· 1 条素材</option>
+                  <option value={4}>中（3~5 分钟）· 最多 3 条素材</option>
+                  <option value={7}>长（5~8 分钟）· 最多 5 条素材</option>
+                </select>
+                <p className="mt-1 text-xs text-zinc-400">
+                  素材不足时对已有内容深聊，只有完全无相关新闻才会拒绝生成
+                </p>
+              </div>
+              <div>
+                <label className={labelCls}>话题提示词（想播点什么，将检索近 7 天相关新闻，优先最新）</label>
+                <textarea
+                  value={topic}
+                  onChange={(e) => setTopic(e.target.value)}
+                  rows={3}
+                  placeholder="例如：生成一份有关最近天气的播客"
+                  className={inputCls}
+                />
+              </div>
             </div>
+            <p className="text-xs text-zinc-400">
+              每小时限 3 次、每天限 10 次；点击生成后立即排队（列表中可见），全流程约 1~3 分钟
+            </p>
             {error && <p className="text-sm text-red-600">{error}</p>}
             <div className="flex gap-2">
               <button

@@ -22,6 +22,8 @@ class Podcast(Base):
     script_prompt_a: Mapped[str | None] = mapped_column(Text)  # 双人 A 人设
     script_prompt_b: Mapped[str | None] = mapped_column(Text)  # 双人 B 人设
     topic_prompt: Mapped[str] = mapped_column(Text)  # 播什么（检索素材用）
+    # 目标时长（分钟）：一等参数，反推素材条数与脚本长度（plan-podcast §5.1）
+    target_minutes: Mapped[int] = mapped_column(Integer, default=4, server_default="4")
 
     voice_a: Mapped[str] = mapped_column(String(64))
     voice_b: Mapped[str | None] = mapped_column(String(64))  # 双人模式

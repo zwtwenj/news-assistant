@@ -46,6 +46,7 @@ def create_podcast(body: PodcastCreate, db: DB, user: CurrentUser) -> PodcastCre
         user_id=user.id,
         mode=body.mode,
         topic_prompt=body.topic_prompt,
+        target_minutes=body.target_minutes,
         voice_a=body.voice_a,
         voice_b=body.voice_b,
         script_prompt=body.script_prompt,
