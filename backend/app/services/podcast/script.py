@@ -33,7 +33,7 @@ SINGLE_PROMPT = """你是资深播客撰稿人。为一期约 {minutes} 分钟�
 
 要求：
 1. 独白口播稿，口语化、有节奏感，不用书面语和列表；
-2. 全长 {words_min}~{words_max} 字（语速约 250 字/分钟），切分为 {seg_min}~{seg_max} 个自然段落；
+2. 全长 {words_min}~{words_max} 字（语速约 280 字/分钟），切分为 {seg_min}~{seg_max} 个自然段落；
 3. 只输出 JSON：{{"segments": [{{"text": "段落内容"}}]}}"""
 
 DUAL_PROMPT = """你是资深播客撰稿人。为一期约 {minutes} 分钟的双人对谈播客写对话稿。
@@ -52,19 +52,26 @@ DUAL_PROMPT = """你是资深播客撰稿人。为一期约 {minutes} 分钟的�
 
 要求：
 1. A/B 对话形式，自然口语、有来有回、可互相接话，不用书面语；
-2. 共 {turns_min}~{turns_max} 轮对话，每轮 1~3 句话，总量约 {minutes} 分钟（语速约 250 字/分钟）；
+2. 共 {turns_min}~{turns_max} 轮对话，每轮 1~3 句话，总量约 {minutes} 分钟（语速约 280 字/分钟）；
 3. speaker 只能是 "A" 或 "B"；
 4. 只输出 JSON：{{"segments": [{{"speaker": "A", "text": "..."}}]}}"""
 
 
+# 实测语速校准（含标点与段间静音，三单实测 265~289 字/分钟，取保守上沿）
+CHARS_PER_MINUTE = 280
+
+
 def _plan(target_minutes: int) -> dict[str, Any]:
-    """时长 → 检索上限与脚本长度区间。素材下限恒为 1（不足则深聊）。"""
+    """时长 → 检索上限与脚本长度区间。素材下限恒为 1（不足则深聊）。
+
+    字数 = 目标分钟 × 280，再留 ~18% 余量（LLM 普遍写不够字数，宁长勿短）。
+    """
     if target_minutes <= 2:  # 短（1~2 分钟）
-        return {"top_k": 1, "words": (300, 500), "segs": (3, 5), "turns": (6, 10)}
+        return {"top_k": 1, "words": (550, 750), "segs": (4, 6), "turns": (10, 14)}
     if target_minutes <= 5:  # 中（3~5 分钟）
-        return {"top_k": 3, "words": (700, 1100), "segs": (5, 9), "turns": (12, 18)}
+        return {"top_k": 3, "words": (1150, 1500), "segs": (7, 10), "turns": (20, 28)}
     # 长（5~8 分钟）
-    return {"top_k": 5, "words": (1200, 1800), "segs": (8, 14), "turns": (18, 28)}
+    return {"top_k": 5, "words": (1900, 2400), "segs": (12, 16), "turns": (34, 44)}
 
 
 def _search_materials(topic: str, top_k: int) -> list[dict[str, Any]]:
@@ -122,24 +129,40 @@ def generate_script(
         )
 
     last_err: Exception | None = None
-    for _ in range(2):  # 空输出/非法 JSON 快速重试（复用 analyzer 经验）
+    words_min, words_max = plan["words"]
+    feedback = ""  # 字数不足时的定向扩写反馈（比抽象的字数要求有效）
+    for attempt in range(2):
         try:
             resp = gateway.chat(
                 "deepseek",
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": prompt + feedback}],
                 response_format={"type": "json_object"},
-                max_tokens=3000,
+                max_tokens=4500,
                 temperature=0.7,
                 langfuse_meta={
                     "podcast": True, "mode": mode,
                     "topic": topic_prompt[:50], "target_minutes": target_minutes,
-                    "materials": len(hits),
+                    "materials": len(hits), "attempt": attempt,
                 },
             )
             raw = (resp.choices[0].message.content or "").strip()
             if not raw:
                 raise ValueError("LLM 返回空内容")
             segments = _validate(json.loads(raw), mode)
+            total_chars = sum(len(s["text"]) for s in segments)
+            if total_chars < words_min * 0.85 and attempt == 0:
+                # 字数硬校验：LLM 普遍写不够（实测差 20%+），带具体反馈重写一次
+                feedback = (
+                    f"\n\n【重要：上一稿仅 {total_chars} 字，太短】"
+                    f"必须扩写到 {words_min}~{words_max} 字："
+                    "对素材展开更多细节、背景、追问与回应，禁止注水或重复表述。"
+                )
+                logger.info("script too short ({}/{}), retry with feedback", total_chars, words_min)
+                continue
+            if total_chars < words_min * 0.85:
+                logger.warning("script still short after retry: {}/{}", total_chars, words_min)
+            logger.info("script ok: {} 段 {} 字（目标 {}~{}）", len(segments), total_chars,
+                        words_min, words_max)
             return segments
         except Exception as exc:  # noqa: BLE001
             last_err = exc
