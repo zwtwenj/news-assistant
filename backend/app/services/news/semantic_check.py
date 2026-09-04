@@ -11,7 +11,8 @@ from loguru import logger
 
 from app.services.llm.gateway import gateway
 
-PROMPT = """判断下面这段从新闻页面提取的文本是否为"完整可读的新闻正文"。这是质量把关任务，请严格判定。
+PROMPT = """判断下面这段从新闻页面提取的文本是否为"完整可读的新闻正文"。
+这是质量把关任务，请严格判定。
 
 判 bad 的典型特征（出现任意一条即为 bad）：
 - 页面导航/菜单/页脚文字（如"新闻频道""责任编辑""扫一扫""返回顶部"成片出现）

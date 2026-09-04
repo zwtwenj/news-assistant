@@ -12,6 +12,8 @@ type Article = {
   summary: string;
   tags: string[];
   url: string;
+  content_quality: string | null;
+  fail_reason: string | null;
 };
 
 type ListResp = {
@@ -28,14 +30,19 @@ export default function NewsListPage() {
   const [page, setPage] = useState(1);
   const [keyword, setKeyword] = useState("");
   const [tag, setTag] = useState("");
+  const [showFailed, setShowFailed] = useState(false); // 勾选：查看质检不通过的新闻
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const load = useCallback(async (p: number, kw: string, t: string) => {
+  const load = useCallback(async (p: number, kw: string, t: string, failed: boolean) => {
     setLoading(true);
     setError("");
     try {
-      const params = new URLSearchParams({ page: String(p), page_size: "15" });
+      const params = new URLSearchParams({
+        page: String(p),
+        page_size: "15",
+        quality: failed ? "bad" : "ok",
+      });
       if (kw.trim()) params.set("keyword", kw.trim());
       if (t) params.set("tag", t);
       setData(await api<ListResp>(`/news/articles?${params}`));
@@ -47,14 +54,14 @@ export default function NewsListPage() {
   }, []);
 
   useEffect(() => {
-    void load(page, keyword, tag);
-  }, [load, page, tag]); // eslint-disable-line react-hooks/exhaustive-deps
+    void load(page, keyword, tag, showFailed);
+  }, [load, page, tag, showFailed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.page_size)) : 1;
 
   const search = () => {
     setPage(1);
-    void load(1, keyword, tag);
+    void load(1, keyword, tag, showFailed);
   };
 
   return (
@@ -80,6 +87,18 @@ export default function NewsListPage() {
         >
           搜索
         </button>
+        <label className="ml-2 flex cursor-pointer items-center gap-1.5 text-sm text-zinc-600 dark:text-zinc-400">
+          <input
+            type="checkbox"
+            checked={showFailed}
+            onChange={(e) => {
+              setShowFailed(e.target.checked);
+              setPage(1);
+            }}
+            className="h-4 w-4 accent-foreground"
+          />
+          查看质检不通过的新闻
+        </label>
         <div className="flex flex-wrap gap-1.5">
           <button
             type="button"
@@ -119,7 +138,9 @@ export default function NewsListPage() {
       {error && <p className="text-sm text-red-600">{error}</p>}
       {loading && <p className="text-sm text-zinc-400">加载中…</p>}
       {!loading && data && data.items.length === 0 && (
-        <p className="py-16 text-center text-sm text-zinc-400">没有匹配的新闻</p>
+        <p className="py-16 text-center text-sm text-zinc-400">
+          {showFailed ? "没有质检不通过的新闻" : "没有匹配的新闻"}
+        </p>
       )}
       <div className="space-y-3">
         {data?.items.map((a) => (
@@ -128,12 +149,22 @@ export default function NewsListPage() {
             href={a.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="block rounded-lg border border-solid border-black/[.06] bg-white p-4 transition-colors hover:border-black/[.2] dark:border-white/[.12] dark:bg-black dark:hover:border-white/[.3]"
+            className={
+              showFailed
+                ? "block rounded-lg border border-solid border-red-200 bg-white p-4 dark:border-red-900/50 dark:bg-black"
+                : "block rounded-lg border border-solid border-black/[.06] bg-white p-4 transition-colors hover:border-black/[.2] dark:border-white/[.12] dark:bg-black dark:hover:border-white/[.3]"
+            }
           >
             <div className="flex items-start justify-between gap-4">
               <h2 className="font-medium text-black dark:text-zinc-50">{a.title}</h2>
               <span className="shrink-0 text-xs text-zinc-400">{a.publish_time}</span>
             </div>
+            {showFailed && (
+              <p className="mt-1.5 rounded bg-red-50 px-2 py-1 text-xs text-red-600 dark:bg-red-950/40 dark:text-red-400">
+                {a.content_quality === "bad" ? "语义/规则质检不通过" : "抓取/判重未通过"}
+                {a.fail_reason ? `：${a.fail_reason}` : ""}
+              </p>
+            )}
             <p className="mt-1 line-clamp-2 text-sm text-zinc-500 dark:text-zinc-400">{a.summary}</p>
             <div className="mt-2 flex items-center gap-2">
               <span className="text-xs text-zinc-400">{a.source}</span>

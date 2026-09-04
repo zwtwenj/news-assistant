@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Query
-from sqlalchemy import func, or_, text
+from sqlalchemy import and_, func, or_, text
 
 from app.api.deps import DB, CurrentUser
 from app.models.article import Article
@@ -86,9 +86,26 @@ def list_articles(
     page_size: int = Query(20, ge=1, le=100),
     keyword: str = Query("", max_length=100),
     tag: str = Query("", max_length=50),
+    quality: str = Query("ok", pattern="^(ok|bad)$"),  # ok=合格新闻 / bad=质检拦截区
 ) -> dict:
-    """新闻列表：分页 + 关键词模糊搜索（标题/正文）+ 标签精确筛选，按发布时间倒序。"""
+    """新闻列表：分页 + 关键词模糊搜索（标题/正文）+ 标签精确筛选，按发布时间倒序。
+
+    quality=ok（默认）：只显示合格新闻（抓取成功 且 未被质检判 bad）；
+    quality=bad：质检拦截区——规则质检或语义检测未通过的，带失败原因。
+    """
     q = db.query(Article).filter(Article.deleted_at.is_(None))
+    ok_condition = (
+        Article.fetch_status == "succeeded",
+        or_(Article.content_quality.is_(None), Article.content_quality != "bad"),
+    )
+    if quality == "ok":
+        q = q.filter(*ok_condition)
+    else:
+        bad_condition = or_(
+            Article.content_quality == "bad",
+            Article.fetch_status.in_(["failed", "skipped"]),
+        )
+        q = q.filter(~and_(*ok_condition), bad_condition)
     if keyword.strip():
         like = f"%{keyword.strip()}%"
         q = q.filter(or_(Article.title.ilike(like), Article.content.ilike(like)))
@@ -120,6 +137,12 @@ def list_articles(
                 "summary": a.summary or (a.content or "")[:100],
                 "tags": a.tags or [],
                 "url": a.url,
+                "content_quality": a.content_quality,
+                # 失败原因：规则质检在 fetch_error，语义检测在 ai_error，判重在 fetch_error；
+                # 存量回填的 bad（未走过门禁）给固定说明
+                "fail_reason": a.fetch_error or a.ai_error or (
+                    "存量质检回填（未记录具体原因）" if a.content_quality == "bad" else None
+                ),
             }
             for a in rows
         ],
