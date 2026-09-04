@@ -16,7 +16,7 @@ import httpx
 from celery import Task, chain
 from langfuse import observe
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.redis_client import redis_client
@@ -32,7 +32,9 @@ from app.models.article import (
 from app.models.feed import Feed
 from app.services.news import analyzer as analyzer_svc
 from app.services.news import extractor as extractor_svc
+from app.services.news import quality as quality_svc
 from app.services.news import rss as rss_svc
+from app.services.news import semantic_check as semantic_svc
 from app.services.news import simhash as simhash_svc
 from app.services.news import vector as vector_svc
 from app.services.observability.langfuse_client import get_langfuse, init_langfuse
@@ -179,10 +181,15 @@ def scrape_articles(self) -> str:
                 if method == "failed":
                     # 三级降级链全部失败（正文抽不到）：计失败，不入库垃圾文本
                     raise ValueError(f"正文抽取失败（三级降级均不可用，最长 {len(content)} 字）")
+                # 质量门禁②（规则质检，微秒级）：确定性垃圾特征 → 隔离不入库
+                verdict, q_reasons = quality_svc.check_content(a.title, content)
+                if verdict == "bad":
+                    raise ValueError(f"规则质检不合格: {'; '.join(q_reasons)}")
                 h = simhash_svc.simhash(content)
                 is_dup = any(simhash_svc.is_similar(h, rh) for rh in recent_hashes)
                 a.content = content
                 a.content_hash = simhash_svc.to_hex(h)
+                a.content_quality = verdict  # good / suspect（suspect 交语义检测复核）
                 if method in ("web", "p_tags"):
                     web += 1
                 else:
@@ -220,7 +227,7 @@ def scrape_articles(self) -> str:
 @observe()
 def analyze_articles(self) -> str:
     db = SessionLocal()
-    ok = fail = judged = 0
+    ok = fail = judged = skipped = 0
     try:
         articles = db.query(Article).filter(
             Article.deleted_at.is_(None),
@@ -230,6 +237,16 @@ def analyze_articles(self) -> str:
         ).all()
         consecutive_fail = 0
         for a in articles:
+            # 质量门禁③（语义检测，glm-4-flash 前置独立调用）：
+            # 规则测不出的"字通顺但非正文"在此拦截；bad 短路不进打标（省输出 token）
+            semantic = semantic_svc.check_semantic(a.title, a.content)
+            if semantic == "bad":
+                a.content_quality = "bad"
+                a.ai_status = SKIPPED
+                a.ai_error = "语义检测：非完整可读的新闻正文"
+                skipped += 1
+                db.commit()
+                continue
             meta: dict[str, Any] = {
                 "article_id": a.id,
                 "pipeline": _session_id(),
@@ -269,9 +286,14 @@ def analyze_articles(self) -> str:
                 logger.error("连续 {} 篇打标失败，疑似 LLM 服务故障，熔断退出", consecutive_fail)
                 break
             time.sleep(random.uniform(0.2, 0.5))  # LLM 节流
-        logger.info("analyze 完成：成功 {} 失败 {} judge采样 {}", ok, fail, judged)
-        _finish_trace(stage="analyze", succeeded=ok, failed=fail, judged=judged)
-        return f"打标成功{ok}/失败{fail}"
+        logger.info(
+            "analyze 完成：成功 {} 失败 {} 语义拦截 {} judge采样 {}", ok, fail, skipped, judged
+        )
+        _finish_trace(
+            stage="analyze", succeeded=ok, failed=fail,
+            semantic_blocked=skipped, judged=judged,
+        )
+        return f"打标成功{ok}/失败{fail}/语义拦截{skipped}"
     finally:
         db.close()
 
@@ -289,6 +311,8 @@ def embed_articles(self) -> str:
             Article.ai_status == SUCCEEDED,
             Article.embed_status.in_([PENDING, FAILED]),
             Article.embed_attempts < MAX_ATTEMPTS,
+            # 质量门禁④：bad 内容永不向量化（null=未检视为放行，兼容存量）
+            or_(Article.content_quality.is_(None), Article.content_quality != "bad"),
         ).all()
         batch: list[Article] = []
         for a in articles:
@@ -338,6 +362,56 @@ def _upsert_batch(db: Session, batch: list[Article]) -> int:
         return 0
 
 
+# ---------- 向量对账（质量门禁第④层，每日 pipeline 末尾） ----------
+
+@celery_app.task(  # 对账失败不影响主链结果，人工可随时重跑
+    bind=True, name="app.tasks.news.reconcile_vectors", base=Task,
+)
+def reconcile_vectors(self) -> str:
+    """比对 PG 可用集合与 Milvus 集合，自动删除孤儿向量（bad/判重/软删的残留）。"""
+    from pymilvus import MilvusClient
+
+    from app.core.config import get_settings
+
+    db = SessionLocal()
+    try:
+        pg_ok = {
+            row.id
+            for row in db.execute(
+                select(Article.id).where(
+                    Article.deleted_at.is_(None),
+                    Article.embed_status == SUCCEEDED,
+                    or_(
+                        Article.content_quality.is_(None),
+                        Article.content_quality != "bad",
+                    ),
+                )
+            )
+        }
+    finally:
+        db.close()
+    s = get_settings()
+    client = MilvusClient(uri=s.milvus_uri, token=s.milvus_token)
+    mv_ids = {
+        r["article_id"]
+        for r in client.query(
+            collection_name=vector_svc.COLLECTION,
+            filter="article_id >= 0",
+            output_fields=["article_id"],
+            limit=1000,
+        )
+    }
+    orphans = sorted(mv_ids - pg_ok)
+    if orphans:
+        client.delete(
+            collection_name=vector_svc.COLLECTION, filter=f"article_id in {orphans}"
+        )
+        logger.warning("向量对账：删除孤儿 {} 条: {}", len(orphans), orphans[:20])
+    else:
+        logger.info("向量对账：一致（{} 条）", len(mv_ids))
+    return f"对账完成，清理孤儿 {len(orphans)} 条"
+
+
 # ---------- 每日编排 ----------
 
 @celery_app.task(  # 不用 BaseTask：编排任务失败重试会重复 dispatch，防重入锁兜底 + 人工介入
@@ -365,6 +439,7 @@ def run_daily_pipeline(self) -> str:
         scrape_articles.si(),
         analyze_articles.si(),
         embed_articles.si(),
+        reconcile_vectors.si(),  # 每日对账：清 Milvus 孤儿向量（bad/删除/判重的残留）
     ).apply_async()
     logger.info("daily pipeline 已触发（补偿 {} 项）", compensated)
     _finish_trace(stage="orchestrate", compensated=compensated)

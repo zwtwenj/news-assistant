@@ -23,6 +23,9 @@ dependencies = [
     "trafilatura>=2.2.0",
     "langfuse>=4.15.1",
     "imageio-ffmpeg>=0.6.0",
+    "newspaper4k>=0.9.6",
+    "readability-lxml>=0.9",
+    "jieba>=0.42.1",
 ]
 
 [dependency-groups]

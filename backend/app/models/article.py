@@ -28,6 +28,9 @@ class Article(Base):
     summary: Mapped[str | None] = mapped_column(Text)  # LLM 摘要
     tags: Mapped[list | None] = mapped_column(JSONB)
 
+    # 入库质量门禁：null=未检 / good / suspect / bad（bad 不向量化，plan 质量四层防御）
+    content_quality: Mapped[str | None] = mapped_column(String(10))
+
     # 三阶段状态机：fetch=抓正文, ai=打标, embed=向量化
     fetch_status: Mapped[str] = mapped_column(String(20), default=PENDING, server_default=PENDING)
     fetch_attempts: Mapped[int] = mapped_column(default=0, server_default="0")
