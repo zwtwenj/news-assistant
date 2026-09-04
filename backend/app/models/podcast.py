@@ -33,6 +33,8 @@ class Podcast(Base):
     error: Mapped[str | None] = mapped_column(Text)
 
     script: Mapped[list | None] = mapped_column(JSONB)  # [{speaker, text}]
+    # 素材命中清单 [{article_id,title,tags,rerank_score}]：本期引用了哪些新闻（可追溯）
+    materials: Mapped[list | None] = mapped_column(JSONB)
     audio_url: Mapped[str | None] = mapped_column(String(300))
     duration_sec: Mapped[int | None] = mapped_column(Integer)
     size_bytes: Mapped[int | None] = mapped_column(Integer)

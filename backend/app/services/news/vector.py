@@ -1,7 +1,9 @@
-"""向量化：百炼 embedding（OpenAI 兼容）→ Milvus upsert/search。"""
+"""向量化与精排：百炼 embedding → Milvus upsert/search；gte-rerank-v2 精排。"""
 
+import time
 from typing import Any
 
+import httpx
 from loguru import logger
 from openai import OpenAI
 from pymilvus import MilvusClient
@@ -136,3 +138,45 @@ def search(
         for hit in results
         if hit["distance"] >= threshold
     ]
+
+
+RERANK_MODEL = "gte-rerank-v2"
+RERANK_PATH = "/api/v1/services/rerank/text-rerank/text-rerank"  # DashScope 原生端点（demo 验证过）
+
+
+def rerank(query: str, docs: list[dict[str, Any]], doc_text: str = "title") -> list[dict[str, Any]]:
+    """gte-rerank-v2 精排：docs 内每项按 doc_text 字段（默认标题）与 query 算相关性。
+
+    为每个 doc 附加 rerank_score 并按其降序返回；调用失败时原序返回（rerank_score=None），
+    不阻断检索主流程。调用方应传入 Langfuse 埋点所需的上下文。
+    """
+    if not docs:
+        return docs
+    s = get_settings()
+    try:
+        started = time.perf_counter()
+        resp = httpx.post(
+            s.dashscope_base_url.rstrip("/").removesuffix("/compatible-mode/v1") + RERANK_PATH,
+            headers={"Authorization": f"Bearer {s.dashscope_api_key}"},
+            json={
+                "model": RERANK_MODEL,
+                "input": {
+                    "query": query,
+                    "documents": [str(d.get(doc_text) or "")[:200] for d in docs],
+                },
+                "parameters": {"return_documents": False, "top_n": len(docs)},
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        results = resp.json()["output"]["results"]  # [{index, relevance_score}]
+        by_index = {r["index"]: r["relevance_score"] for r in results}
+        for i, d in enumerate(docs):
+            d["rerank_score"] = by_index.get(i)
+        docs.sort(key=lambda d: d["rerank_score"] or 0, reverse=True)
+        logger.info("rerank ok docs={} latency={:.2f}s", len(docs), time.perf_counter() - started)
+    except Exception:
+        logger.opt(exception=True).warning("rerank fail, keep original order")
+        for d in docs:
+            d.setdefault("rerank_score", None)
+    return docs

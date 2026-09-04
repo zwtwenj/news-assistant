@@ -44,7 +44,7 @@ def gen_script(self, podcast_id: int) -> str:
         p.status = "scripting"
         db.commit()
         try:
-            segments = script_svc.generate_script(
+            result = script_svc.generate_script(
                 p.mode, p.topic_prompt, p.script_prompt, p.script_prompt_a, p.script_prompt_b,
                 target_minutes=p.target_minutes,
             )
@@ -54,12 +54,13 @@ def gen_script(self, podcast_id: int) -> str:
         except Exception as exc:  # noqa: BLE001
             _fail(db, p, f"脚本生成异常: {exc}")
             return f"failed(podcast={podcast_id})"
-        p.script = segments
+        p.script = result["segments"]
+        p.materials = result["materials"]  # 本期引用的新闻清单（可追溯）
         p.error = None
         # TTS 关闭模式（调试脚本用）：脚本完成即成功，不做语音合成
         p.status = "succeeded" if not get_settings().podcast_tts_enabled else "synthesizing"
         db.commit()
-        return f"script ok({len(segments)}段)"
+        return f'script ok({len(result["segments"])}段, 素材{len(result["materials"])}条)'
     finally:
         db.close()
 
