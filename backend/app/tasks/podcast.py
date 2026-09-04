@@ -56,7 +56,8 @@ def gen_script(self, podcast_id: int) -> str:
             return f"failed(podcast={podcast_id})"
         p.script = segments
         p.error = None
-        p.status = "synthesizing"
+        # TTS 关闭模式（调试脚本用）：脚本完成即成功，不做语音合成
+        p.status = "succeeded" if not get_settings().podcast_tts_enabled else "synthesizing"
         db.commit()
         return f"script ok({len(segments)}段)"
     finally:

@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     # 播客合成
     ffmpeg_path: str = "ffmpeg"  # Windows 本地开发填 backend/bin/ffmpeg.exe 绝对路径
     media_dir: str = "media"  # 本地存储根（相对 backend/），静态服务 /media/*
+    podcast_tts_enabled: bool = True  # 调试脚本时置 false：只生成脚本不做 TTS/拼接
 
 
 @lru_cache

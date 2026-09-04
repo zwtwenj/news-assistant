@@ -26,7 +26,7 @@ SCRIPT_PROVIDER = "dashscope"
 SCRIPT_MODEL = "qwen-plus"
 SEARCH_DAYS = 7
 MIN_SCORE = 0.25  # 检索分数下限：全低于此 = 库里没有相关内容
-CONTENT_EXCERPT = 900  # 每条素材注入的正文节选字数
+CONTENT_EXCERPT = 2000  # 每条素材注入的正文节选字数（新闻导语/背景常在文中后段，不宜截太狠）
 
 # 页面噪音黑名单：trafilatura 抽取的正文仍可能混入导航/页脚行，注入前过滤
 _NOISE_KEYWORDS = (
@@ -64,14 +64,18 @@ SINGLE_PROMPT = """你是资深新闻节目撰稿人，为早间新闻电台写�
 
 写作规则（按顺序思考并执行）：
 1. 先在 scratchpad 里逐条梳理新闻要素：
-   谁、何时、何地、发生了什么、关键数字/结果、为什么重要——缺要素就回素材里找，找不到不写；
-2. 口播稿结构：开场（"为您播报 N 条新闻"）→ 每条新闻先一句话导语
+   ①事件本身——发生了什么事、在哪里、何时、影响谁（这是一条新闻的主体）；
+   ②关键数字与结果；③各方行动与反应（救援/表态/措施）；
+   ④为什么重要。缺要素就回素材里找，找不到不写；
+2. 主次原则：先讲事件背景，再讲行动——听众必须先知道"发生了什么"，
+   才能理解"谁在做什么、为什么做"。绝不能脱离事件空谈行动；
+3. 口播稿结构：开场（"为您播报 N 条新闻"）→ 每条新闻先一句话导语
    （听完导语就知道发生了什么）→ 再展开细节与背景 → 收尾总结；
-3. 信息优先：口语化是"怎么说"，不能牺牲"说什么"——
+4. 信息优先：口语化是"怎么说"，不能牺牲"说什么"——
    每个段落必须让听众获得具体事实，禁止空泛的感慨和过渡；
-4. 全长 {words_min}~{words_max} 字（语速约 280 字/分钟），
+5. 全长 {words_min}~{words_max} 字（语速约 280 字/分钟），
    切分为 {seg_min}~{seg_max} 个自然段落，每段一个完整意思；
-5. 只输出 JSON：{{"scratchpad": "各条新闻要素梳理", "segments": [{{"text": "段落内容"}}]}}"""
+6. 只输出 JSON：{{"scratchpad": "各条新闻要素梳理", "segments": [{{"text": "段落内容"}}]}}"""
 
 DUAL_PROMPT = """你是资深新闻节目撰稿人，为一期约 {minutes} 分钟的双人新闻对谈写对话稿。
 
@@ -117,38 +121,62 @@ def _plan(target_minutes: int) -> dict[str, Any]:
 
 
 def _search_materials(topic: str, top_k: int) -> list[dict[str, Any]]:
-    """检索素材：近 7 天窗口，新鲜度优先。
+    """检索素材：近 7 天窗口，新鲜度优先，多召回备选。
 
-    召回放大一倍 → 分数阈值过滤 → 按发布时间倒序取 top_k：
-    语义相关性由阈值保证，"最近天气"优先命中今天/昨天而不是五天前。
+    召回（top_k+2）→ 分数阈值过滤 → 按发布时间倒序：
+    多召回的量用于在组装阶段跳过"正文垃圾"的素材（备选补位）。
     """
     week_ago = int(time.time()) - SEARCH_DAYS * 86400
-    hits = vector_svc.search(topic, top_k=top_k * 2, publish_after_ts=week_ago)
+    hits = vector_svc.search(topic, top_k=top_k + 2, publish_after_ts=week_ago)
     qualified = [h for h in hits if h["score"] >= MIN_SCORE]
     qualified.sort(key=lambda h: h["publish_ts"], reverse=True)
-    return qualified[:top_k]
+    return qualified  # 不截断，由 _load_material_text 过滤后取满 top_k
 
 
-def _load_material_text(hits: list[dict[str, Any]]) -> str:
-    """回表 PG 组装素材文本：标题+来源+时间+摘要+正文节选（信息量的根基）。"""
+def _load_material_text(hits: list[dict[str, Any]], top_k: int) -> str:
+    """回表 PG 组装素材文本：标题+来源+时间+摘要+正文节选。
+
+    正文清洗后 <80 字的素材视为"正文缺失"，跳过由备选补位（垃圾正文只会误导
+    LLM 对着标题想象）；全部垃圾时保留标题+摘要并以（正文缺失）标注。
+    """
     ids = [h["article_id"] for h in hits]
     with SessionLocal() as db:
         rows = db.execute(select(Article).where(Article.id.in_(ids))).scalars().all()
         by_id = {a.id: a for a in rows}
-    blocks = []
+
+    usable: list[dict[str, Any]] = []  # (article, cleaned_content)
     for h in hits:
         a = by_id.get(h["article_id"])
         if a is None:
             continue
-        from datetime import UTC
+        cleaned = _clean_content(a.content)
+        if len(cleaned) >= 80:
+            usable.append({"a": a, "content": cleaned})
+        if len(usable) >= top_k:
+            break
 
+    from datetime import UTC
+
+    blocks = []
+    for item in usable:
+        a = item["a"]
         pub = a.publish_time.astimezone(UTC).strftime("%m-%d %H:%M") if a.publish_time else ""
         blocks.append(
             f"【素材{len(blocks) + 1}】《{a.title}》\n"
             f"来源：{a.source} ｜ 发布：{pub} ｜ 标签：{'/'.join(a.tags or [])}\n"
             f"摘要：{a.summary or '（无）'}\n"
-            f"正文：{_clean_content(a.content)}\n"
+            f"正文：{item['content']}\n"
         )
+    if not blocks:
+        # 全部素材正文缺失：退回第一条，只用标题+摘要并如实标注
+        a = by_id.get(hits[0]["article_id"]) if hits else None
+        if a is not None:
+            blocks.append(
+                f"【素材1】《{a.title}》\n"
+                f"来源：{a.source} ｜ 标签：{'/'.join(a.tags or [])}\n"
+                f"摘要：{a.summary or '（无）'}\n"
+                f"正文：（缺失，仅凭标题与摘要，切勿虚构细节）\n"
+            )
     return "\n".join(blocks)
 
 
@@ -166,7 +194,7 @@ def generate_script(
     if not hits:
         raise ScriptError("素材不足，无法为你生成播客：近期新闻库中没有与话题相关的内容")
 
-    materials = _load_material_text(hits)
+    materials = _load_material_text(hits, plan["top_k"])
     common = {
         "minutes": target_minutes,
         "topic_prompt": topic_prompt,

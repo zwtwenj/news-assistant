@@ -57,16 +57,44 @@ RSS_SUMMARY = (
 )
 
 
+LONG_CLEAN_SUMMARY = "这段RSS摘要长度超过两百字因此能通过垃圾检测被当作兜底正文使用。" + (
+    "它概括了完整的新闻事实，包括事件主体、时间地点与关键结果。" * 8
+)
+
+
 def test_extract_prefers_web_content() -> None:
     content, method = extract(GOOD_HTML, RSS_SUMMARY)
     assert method == "web"
     assert "新闻正文内容" in content
 
 
-def test_extract_falls_back_to_rss_summary() -> None:
-    content, method = extract(NAV_HEAVY_HTML, RSS_SUMMARY)
+def test_extract_falls_back_to_clean_rss_summary() -> None:
+    """垃圾页 + 干净且够长的摘要 → rss 兜底成功。"""
+    content, method = extract(NAV_HEAVY_HTML, LONG_CLEAN_SUMMARY)
     assert method == "rss"
-    assert "RSS摘要" in content
+    assert "完整的新闻事实" in content
+
+
+def test_extract_all_failed_on_garbage_page_and_short_summary() -> None:
+    """垃圾页 + 过短摘要 → failed（不再把短摘要/垃圾文本当正文入库）。"""
+    _, method = extract(NAV_HEAVY_HTML, RSS_SUMMARY)  # 清洗后约 50 字 < 200 下限
+    assert method == "failed"
+
+
+def test_extract_p_tags_fallback() -> None:
+    """<p> 聚合兜底的单元验证（trafilatura 对复杂页失效的实测场景，如央视焦点访谈）。"""
+    from app.services.news.extractor import _extract_paragraphs
+
+    html = (
+        "<html><body><nav>首页 新闻 返回顶部</nav>"
+        + "<p>[!--begin:htmlVideoCode--]newPlayer[!--end--]</p>"
+        + "<p>扫一扫 分享到微信</p>"
+        + "<p>" + "央视网消息：这是一段足够长的正文段落，用于验证p标签聚合兜底。" * 8 + "</p>"
+        + "</body></html>"
+    )
+    content = _extract_paragraphs(html)
+    assert "p标签聚合兜底" in content
+    assert "newPlayer" not in content and "扫一扫" not in content
 
 
 def test_clean_rss_summary_strips_html() -> None:

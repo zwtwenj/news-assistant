@@ -176,11 +176,14 @@ def scrape_articles(self) -> str:
                 )
                 resp.raise_for_status()
                 content, method = extractor_svc.extract(resp.text, a.content)
+                if method == "failed":
+                    # 三级降级链全部失败（正文抽不到）：计失败，不入库垃圾文本
+                    raise ValueError(f"正文抽取失败（三级降级均不可用，最长 {len(content)} 字）")
                 h = simhash_svc.simhash(content)
                 is_dup = any(simhash_svc.is_similar(h, rh) for rh in recent_hashes)
                 a.content = content
                 a.content_hash = simhash_svc.to_hex(h)
-                if method == "web":
+                if method in ("web", "p_tags"):
                     web += 1
                 else:
                     rss += 1
