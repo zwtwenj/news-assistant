@@ -1,9 +1,11 @@
-"""播客脚本生成：话题提示词 → Milvus 检索素材 → LLM 写脚本（时长驱动参数）。
+"""播客脚本生成：话题提示词 → Milvus 检索素材 → 回表取正文 → LLM 写新闻播报稿。
 
-时长规则（一等参数）：
-- 素材条数：上限按时长档位（短1/中3/长5），下限 1——选了长但只检索到 1 条，
-  也照样生成（对已有素材深聊到底），只有 0 条才报"素材不足"；
-- 脚本长度：按中文口播语速 ~250 字/分钟换算字数/轮数区间。
+设计要点（参考 NotebookLM / Together AI 开源教程）：
+- 素材注入：标题 + 打标摘要 + 正文节选（信息量的根基，绝不只给标题）；
+- 新闻要素约束：每条新闻必须交代 5W1H 与关键数字，先导语后展开；
+- 忠实性：所有事实须出自素材原文（substantiated by the input text）；
+- scratchpad：先在 JSON 里梳理各条新闻要素，再写口播稿（信息密度核心手段）；
+- 时长驱动：素材上限按时长档位（短1/中3/长5），下限恒为 1，0 条才拒绝。
 """
 
 import json
@@ -11,16 +13,45 @@ import time
 from typing import Any
 
 from loguru import logger
+from sqlalchemy import select
 
+from app.db.session import SessionLocal
+from app.models.article import Article
 from app.services.llm.gateway import gateway
 from app.services.news import vector as vector_svc
 from app.services.podcast import voices as voices_svc
 
-MODEL = "deepseek-v4-flash"
+# 脚本生成用中档模型（flash 级写新闻信息组织偏弱）；打标仍用 deepseek-v4-flash
+SCRIPT_PROVIDER = "dashscope"
+SCRIPT_MODEL = "qwen-plus"
 SEARCH_DAYS = 7
 MIN_SCORE = 0.25  # 检索分数下限：全低于此 = 库里没有相关内容
+CONTENT_EXCERPT = 900  # 每条素材注入的正文节选字数
 
-SINGLE_PROMPT = """你是资深播客撰稿人。为一期约 {minutes} 分钟的单人播客写口播稿。
+# 页面噪音黑名单：trafilatura 抽取的正文仍可能混入导航/页脚行，注入前过滤
+_NOISE_KEYWORDS = (
+    "新闻频道", "点击收起", "扫一扫", "返回", "正在加载", "责任编辑", "编辑：",
+    "分享到", "原标题", "最新推荐", "加载中", "首页", "客户端", "热线", "版权",
+)
+
+
+def _clean_content(text: str) -> str:
+    """行级噪音过滤：丢弃短行、邮箱行、"来源 | 日期"行与含导航/页脚关键词的行。"""
+    import re
+
+    lines = []
+    for line in text.splitlines():
+        s = line.strip()
+        if len(s) < 6 or "@" in s:
+            continue
+        if re.search(r"\|\s*20\d\d年", s):  # 来源/日期重复行
+            continue
+        if any(k in s for k in _NOISE_KEYWORDS):
+            continue
+        lines.append(s)
+    return "\n".join(lines)[:CONTENT_EXCERPT]
+
+SINGLE_PROMPT = """你是资深新闻节目撰稿人，为早间新闻电台写一期约 {minutes} 分钟的单人口播稿。
 
 【风格与写法要求（脚本提示词）】
 {script_prompt}
@@ -28,15 +59,21 @@ SINGLE_PROMPT = """你是资深播客撰稿人。为一期约 {minutes} 分钟�
 【本期主题（话题提示词）】
 {topic_prompt}
 
-【参考新闻素材】（内容必须以此为准，不得编造事实；若素材少于预期，就对已有素材深入展开，不要硬凑）
+【新闻素材】（全部事实必须出自以下素材，不得编造数字、引语或情节；素材不足预期就对已有内容深入展开，不要硬凑）
 {materials}
 
-要求：
-1. 独白口播稿，口语化、有节奏感，不用书面语和列表；
-2. 全长 {words_min}~{words_max} 字（语速约 280 字/分钟），切分为 {seg_min}~{seg_max} 个自然段落；
-3. 只输出 JSON：{{"segments": [{{"text": "段落内容"}}]}}"""
+写作规则（按顺序思考并执行）：
+1. 先在 scratchpad 里逐条梳理新闻要素：
+   谁、何时、何地、发生了什么、关键数字/结果、为什么重要——缺要素就回素材里找，找不到不写；
+2. 口播稿结构：开场（"为您播报 N 条新闻"）→ 每条新闻先一句话导语
+   （听完导语就知道发生了什么）→ 再展开细节与背景 → 收尾总结；
+3. 信息优先：口语化是"怎么说"，不能牺牲"说什么"——
+   每个段落必须让听众获得具体事实，禁止空泛的感慨和过渡；
+4. 全长 {words_min}~{words_max} 字（语速约 280 字/分钟），
+   切分为 {seg_min}~{seg_max} 个自然段落，每段一个完整意思；
+5. 只输出 JSON：{{"scratchpad": "各条新闻要素梳理", "segments": [{{"text": "段落内容"}}]}}"""
 
-DUAL_PROMPT = """你是资深播客撰稿人。为一期约 {minutes} 分钟的双人对谈播客写对话稿。
+DUAL_PROMPT = """你是资深新闻节目撰稿人，为一期约 {minutes} 分钟的双人新闻对谈写对话稿。
 
 【主持人 A 人设与写法（脚本提示词A）】
 {script_prompt_a}
@@ -47,14 +84,19 @@ DUAL_PROMPT = """你是资深播客撰稿人。为一期约 {minutes} 分钟的�
 【本期主题（话题提示词）】
 {topic_prompt}
 
-【参考新闻素材】（内容必须以此为准，不得编造事实；素材少于预期就深聊已有内容，不要硬凑）
+【新闻素材】（全部事实必须出自以下素材，不得编造数字、引语或情节；素材不足预期就深聊已有内容，不要硬凑）
 {materials}
 
-要求：
-1. A/B 对话形式，自然口语、有来有回、可互相接话，不用书面语；
-2. 共 {turns_min}~{turns_max} 轮对话，每轮 1~3 句话，总量约 {minutes} 分钟（语速约 280 字/分钟）；
-3. speaker 只能是 "A" 或 "B"；
-4. 只输出 JSON：{{"segments": [{{"speaker": "A", "text": "..."}}]}}"""
+写作规则：
+1. 先在 scratchpad 里逐条梳理新闻要素：
+   谁、何时、何地、发生了什么、关键数字/结果、为什么重要；
+2. A/B 对话：主播负责播报事实（导语+关键细节），搭档负责追问、确认和补充背景——
+   提问必须指向具体信息，不问空泛问题；
+3. 信息优先：每轮对话都要让听众获得具体事实，禁止空转的寒暄与感慨；
+4. 共 {turns_min}~{turns_max} 轮，每句不超过 100 字，总量约 {minutes} 分钟（语速约 280 字/分钟）；
+5. speaker 只能是 "A" 或 "B"；
+6. 只输出 JSON：{{"scratchpad": "要素梳理",
+   "segments": [{{"speaker": "A", "text": "..."}}]}}"""
 
 
 # 实测语速校准（含标点与段间静音，三单实测 265~289 字/分钟，取保守上沿）
@@ -87,6 +129,29 @@ def _search_materials(topic: str, top_k: int) -> list[dict[str, Any]]:
     return qualified[:top_k]
 
 
+def _load_material_text(hits: list[dict[str, Any]]) -> str:
+    """回表 PG 组装素材文本：标题+来源+时间+摘要+正文节选（信息量的根基）。"""
+    ids = [h["article_id"] for h in hits]
+    with SessionLocal() as db:
+        rows = db.execute(select(Article).where(Article.id.in_(ids))).scalars().all()
+        by_id = {a.id: a for a in rows}
+    blocks = []
+    for h in hits:
+        a = by_id.get(h["article_id"])
+        if a is None:
+            continue
+        from datetime import UTC
+
+        pub = a.publish_time.astimezone(UTC).strftime("%m-%d %H:%M") if a.publish_time else ""
+        blocks.append(
+            f"【素材{len(blocks) + 1}】《{a.title}》\n"
+            f"来源：{a.source} ｜ 发布：{pub} ｜ 标签：{'/'.join(a.tags or [])}\n"
+            f"摘要：{a.summary or '（无）'}\n"
+            f"正文：{_clean_content(a.content)}\n"
+        )
+    return "\n".join(blocks)
+
+
 def generate_script(
     mode: str,
     topic_prompt: str,
@@ -97,14 +162,11 @@ def generate_script(
 ) -> list[dict[str, Any]]:
     """返回 [{speaker?, text}]；素材为 0 或输出非法时抛 ScriptError（任务层计失败）。"""
     plan = _plan(target_minutes)
-    # 上限按档位、下限 1：检索内部已做阈值过滤与新鲜度排序，剩几条用几条（0 条才拒绝）
     hits = _search_materials(topic_prompt, plan["top_k"])
     if not hits:
         raise ScriptError("素材不足，无法为你生成播客：近期新闻库中没有与话题相关的内容")
 
-    materials = "\n".join(
-        f"- 《{h['title']}》（{h.get('tags') or []}）：摘要见原文" for h in hits
-    )
+    materials = _load_material_text(hits)
     common = {
         "minutes": target_minutes,
         "topic_prompt": topic_prompt,
@@ -134,7 +196,8 @@ def generate_script(
     for attempt in range(2):
         try:
             resp = gateway.chat(
-                "deepseek",
+                SCRIPT_PROVIDER,
+                model=SCRIPT_MODEL,
                 messages=[{"role": "user", "content": prompt + feedback}],
                 response_format={"type": "json_object"},
                 max_tokens=4500,
@@ -151,7 +214,6 @@ def generate_script(
             segments = _validate(json.loads(raw), mode)
             total_chars = sum(len(s["text"]) for s in segments)
             if total_chars < words_min * 0.85 and attempt == 0:
-                # 字数硬校验：LLM 普遍写不够（实测差 20%+），带具体反馈重写一次
                 feedback = (
                     f"\n\n【重要：上一稿仅 {total_chars} 字，太短】"
                     f"必须扩写到 {words_min}~{words_max} 字："
