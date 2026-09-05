@@ -38,6 +38,7 @@ jobs:
           python-version: "3.13"
       - run: uv sync --frozen
       - run: uv run ruff check .
+      - run: uv run alembic upgrade head # service PG 是空库，测试前建表
       - run: uv run pytest -q
 
   frontend:
