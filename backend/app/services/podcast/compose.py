@@ -61,9 +61,10 @@ def compose_mp3(seg_files: list[Path], out_path: Path) -> dict:
     # ffprobe 取时长
     duration = _probe_duration(out_path)
     size = out_path.stat().st_size
-    # 清理临时文件（分段 + 静音 + concat 列表）
-    for f in out_dir_cleanables(out_path.parent):
-        f.unlink(missing_ok=True)
+    # 清理临时文件（分段在各自所在目录，静音/concat 列表在输出目录）
+    for d in {out_path.parent, *(seg.parent for seg in seg_files)}:
+        for f in out_dir_cleanables(d):
+            f.unlink(missing_ok=True)
     logger.info("compose ok {} duration={}s size={}", out_path.name, duration, size)
     return {"duration_sec": duration, "size_bytes": size}
 

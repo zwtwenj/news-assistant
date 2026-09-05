@@ -28,7 +28,7 @@ def create_app() -> FastAPI:
     # 根路径也暴露探针，compose healthcheck / 负载均衡无需带前缀
     app.include_router(health_router)
 
-    # 播客产物本地存储（生产切 OSS 后可移除）
+    # 播客产物本地暂存（终存 OSS；此挂载服务生成中调试与 OSS 上传失败的降级路径）
     media_root = Path(settings.media_dir).resolve()
     media_root.mkdir(parents=True, exist_ok=True)
     app.mount("/media", StaticFiles(directory=str(media_root)), name="media")

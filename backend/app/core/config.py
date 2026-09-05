@@ -51,8 +51,15 @@ class Settings(BaseSettings):
 
     # 播客合成
     ffmpeg_path: str = "ffmpeg"  # Windows 本地开发填 backend/bin/ffmpeg.exe 绝对路径
-    media_dir: str = "media"  # 本地存储根（相对 backend/），静态服务 /media/*
+    media_dir: str = "media"  # 本地暂存根（相对 backend/），生成中分段/拼接用
     podcast_tts_enabled: bool = True  # 调试脚本时置 false：只生成脚本不做 TTS/拼接
+
+    # 阿里云 OSS（播客音频终存；AK 为空时自动回退本地 /media）
+    oss_access_key_id: str = ""
+    oss_secret: str = ""
+    oss_bucket: str = "icarus1"
+    oss_endpoint: str = "https://oss-cn-hangzhou.aliyuncs.com"
+    oss_prefix: str = "news/podcasts"  # 对象 key 前缀（与 demo 项目共用 bucket，目录隔离）
 
 
 @lru_cache

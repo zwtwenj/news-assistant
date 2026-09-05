@@ -23,3 +23,7 @@ npm-debug.log*
 *.log
 .idea/
 .vscode/
+.zcode/
+
+# ===== 媒体产物（终存 OSS，本地仅生成中暂存）=====
+backend/media/

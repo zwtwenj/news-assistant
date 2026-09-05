@@ -4,6 +4,7 @@
 chain 串联（.si()），单 podcast 独立推进，失败 error 落库可单阶段重跑（幂等跳过已完成阶段）。
 """
 
+import shutil
 from pathlib import Path
 
 from celery import Task, chain
@@ -16,6 +17,7 @@ from app.services.podcast import compose as compose_svc
 from app.services.podcast import script as script_svc
 from app.services.podcast import tts as tts_svc
 from app.services.podcast.script import speaker_voice_map
+from app.services.storage import oss as oss_svc
 from app.tasks import celery_app
 from app.tasks.base import BaseTask
 
@@ -109,13 +111,21 @@ def compose_audio(self, podcast_id: int) -> str:
         except Exception as exc:  # noqa: BLE001
             _fail(db, p, f"拼接失败: {exc}")
             return f"failed(podcast={podcast_id})"
-        p.audio_url = f"/media/podcasts/{p.id}.mp3"
+        # 终存 OSS：上传成片 → audio_url 存公有直链 → 清理本地（分段 compose 内已清）。
+        # 上传失败降级本地 /media 路径，不影响成片可用。
+        audio_url = f"/media/podcasts/{p.id}.mp3"
+        if oss_svc.enabled():
+            key = f"{get_settings().oss_prefix}/{p.id}.mp3"
+            if oss_svc.upload_file(out_path, key):
+                audio_url = oss_svc.public_url(key)
+                out_path.unlink(missing_ok=True)
+        p.audio_url = audio_url
         p.duration_sec = info["duration_sec"]
         p.size_bytes = info["size_bytes"]
         p.error = None
         p.status = "succeeded"
         db.commit()
-        work_dir.rmdir()  # 目录已空（compose 内清理）
+        shutil.rmtree(work_dir, ignore_errors=True)  # 分段 compose 内已清，兜底删工作目录
         return f"podcast {p.id} succeeded"
     finally:
         db.close()
