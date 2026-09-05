@@ -13,6 +13,11 @@ RUN uv sync --frozen --no-dev
 FROM python:3.13-slim-bookworm
 WORKDIR /app
 
+# ffmpeg：celery-media 拼接播客音频；curl：容器 healthcheck
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # 安全：非 root 运行
 RUN useradd -m appuser
 COPY --from=builder /app /app

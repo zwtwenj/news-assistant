@@ -1,0 +1,50 @@
+name: Deploy
+
+# 手动触发（plan §10：M1 手动部署，稳定后再开 push 自动）
+# 依赖 repo secrets：DEPLOY_SSH_KEY（服务器部署私钥）
+on:
+  workflow_dispatch:
+
+env:
+  SERVER: root@198.44.177.247
+  REMOTE_DIR: /opt/news-assistant
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 登录 GHCR 拉镜像
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 拉取镜像并导出 tar
+        run: |
+          docker pull ghcr.io/${{ github.repository_owner }}/news-backend:latest
+          docker pull ghcr.io/${{ github.repository_owner }}/news-frontend:latest
+          docker save \
+            ghcr.io/${{ github.repository_owner }}/news-backend:latest \
+            ghcr.io/${{ github.repository_owner }}/news-frontend:latest \
+            -o /tmp/news-images.tar
+
+      - name: 准备 SSH 密钥
+        run: |
+          install -m 600 /dev/null ~/.ssh/id_ed25519
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          ssh-keyscan -H 198.44.177.247 >> ~/.ssh/known_hosts
+
+      - name: 上传部署文件与镜像
+        run: |
+          ssh ${{ env.SERVER }} "mkdir -p ${{ env.REMOTE_DIR }}"
+          scp /tmp/news-images.tar ${{ env.SERVER }}:${{ env.REMOTE_DIR }}/
+          scp deploy/docker-compose.yml deploy/nginx.conf deploy/deploy.sh ${{ env.SERVER }}:${{ env.REMOTE_DIR }}/
+
+      - name: 执行部署
+        run: ssh ${{ env.SERVER }} "cd ${{ env.REMOTE_DIR }} && bash deploy.sh"
