@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     # JWT（认证模块）
     jwt_access_ttl_minutes: int = 120  # access token 有效期 2h
     jwt_refresh_ttl_days: int = 14  # refresh token 有效期 14d（轮换）
+    # Cookie Secure 标记：仅 HTTPS 部署置 true（明文 http 下浏览器拒存 Secure Cookie，登录态会丢失）
+    cookie_secure: bool = False
 
     # Langfuse（LLM 观测，自托管 v4）
     langfuse_host: str = ""

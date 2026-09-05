@@ -20,7 +20,7 @@ def _client_ip(request: Request) -> str:
 
 def _set_auth_cookies(response: Response, pair: TokenPair) -> None:
     settings = get_settings()
-    secure = settings.env == "prod"
+    secure = settings.cookie_secure  # 与 ENV 解耦：由是否 HTTPS 决定，而非环境名
     response.set_cookie(
         ACCESS_COOKIE,
         pair.access_token,
