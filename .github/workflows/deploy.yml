@@ -36,6 +36,7 @@ jobs:
 
       - name: 准备 SSH 密钥
         run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
           install -m 600 /dev/null ~/.ssh/id_ed25519
           echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
           ssh-keyscan -H 198.44.177.247 >> ~/.ssh/known_hosts
