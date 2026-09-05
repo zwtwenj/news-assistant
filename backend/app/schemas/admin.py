@@ -53,3 +53,38 @@ class HostOut(HostBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+
+# ---------- 管理员账号管理 ----------
+
+PASSWORD_MIN = 8  # 与 scripts/create_admin.py 一致
+
+
+class AdminAccountCreate(BaseModel):
+    username: str = Field(min_length=1, max_length=50)
+    password: str = Field(min_length=PASSWORD_MIN, max_length=128)
+    display_name: str | None = Field(default=None, max_length=50)
+
+
+class AdminAccountUpdate(BaseModel):
+    display_name: str | None = Field(default=None, max_length=50)
+    status: str | None = Field(default=None, pattern="^(active|banned)$")
+    password: str | None = Field(default=None, max_length=128)  # None=不改密
+
+    @field_validator("password")
+    @classmethod
+    def check_password(cls, v: str | None) -> str | None:
+        if v is not None and len(v) < PASSWORD_MIN:
+            raise ValueError(f"密码至少 {PASSWORD_MIN} 位")
+        return v or None
+
+
+class AdminAccountOut(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: int
+    username: str
+    display_name: str | None
+    status: str
+    last_login_at: datetime | None
+    created_at: datetime

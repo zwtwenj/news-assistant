@@ -11,6 +11,7 @@ const MENU: { href: string; label: string; icon: string; disabled?: boolean }[] 
   { href: "/admin/news", label: "新闻管理", icon: "📰", disabled: true },
   { href: "/admin/news/new", label: "添加新闻", icon: "➕", disabled: true },
   { href: "/admin/feeds", label: "源管理", icon: "📡", disabled: true },
+  { href: "/admin/accounts", label: "账号管理", icon: "👤" },
 ];
 
 export default function AdminSidebar() {

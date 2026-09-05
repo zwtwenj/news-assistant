@@ -1,7 +1,7 @@
-"""后管 API：独立账号认证 + 主播配置 CRUD（plan-admin §2）。
+"""后管 API：独立账号认证 + 管理员账号管理 + 主播配置 CRUD（plan-admin §2）。
 
 - 登录限频：IP 维度 5 次/10 分钟（Redis，复用播客限频写法）
-- 账号只能经 scripts/create_admin.py 创建，无注册端点
+- 账号仅管理员可在后管内创建（或经 scripts/create_admin.py 引导建号），无注册端点
 """
 
 from datetime import UTC, datetime
@@ -14,6 +14,9 @@ from app.core.redis_client import redis_client
 from app.models.admin_host import AdminHost
 from app.models.admin_user import AdminUser
 from app.schemas.admin import (
+    AdminAccountCreate,
+    AdminAccountOut,
+    AdminAccountUpdate,
     AdminLoginIn,
     AdminUserOut,
     HostCreate,
@@ -21,7 +24,7 @@ from app.schemas.admin import (
     HostUpdate,
 )
 from app.services.auth.jwt import create_access_token
-from app.services.auth.password import verify_password
+from app.services.auth.password import hash_password, verify_password
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -125,3 +128,56 @@ def delete_host(host_id: int, db: DB, _admin: CurrentAdmin) -> dict:
     db.delete(host)
     db.commit()
     return {"status": "ok"}
+
+
+# ---------- 管理员账号管理 ----------
+
+
+def _get_account(db, account_id: int) -> AdminUser:
+    account = db.get(AdminUser, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    return account
+
+
+@router.get("/users")
+def list_accounts(db: DB, _admin: CurrentAdmin) -> list[AdminAccountOut]:
+    rows = db.query(AdminUser).order_by(AdminUser.id).all()
+    return [AdminAccountOut.model_validate(r) for r in rows]
+
+
+@router.post("/users", status_code=201)
+def create_account(body: AdminAccountCreate, db: DB, _admin: CurrentAdmin) -> AdminAccountOut:
+    exists = db.query(AdminUser.id).filter(AdminUser.username == body.username).first()
+    if exists:
+        raise HTTPException(status_code=409, detail="用户名已存在")
+    account = AdminUser(
+        username=body.username,
+        password_hash=hash_password(body.password),
+        display_name=body.display_name,
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    return AdminAccountOut.model_validate(account)
+
+
+@router.put("/users/{account_id}")
+def update_account(
+    account_id: int, body: AdminAccountUpdate, db: DB, admin: CurrentAdmin
+) -> AdminAccountOut:
+    account = _get_account(db, account_id)
+    if body.status == "banned":
+        # 防自锁：不能停用自己（登录态本身即 active，停他人时可用数必然 ≥2，
+        # 故无需再设「最后一个管理员」护栏）
+        if account.id == admin.id:
+            raise HTTPException(status_code=400, detail="不能停用当前登录的账号")
+    if body.display_name is not None:
+        account.display_name = body.display_name
+    if body.status is not None:
+        account.status = body.status
+    if body.password is not None:
+        account.password_hash = hash_password(body.password)
+    db.commit()
+    db.refresh(account)
+    return AdminAccountOut.model_validate(account)
