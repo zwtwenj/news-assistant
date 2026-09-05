@@ -38,6 +38,8 @@ services:
     image: ghcr.io/zwtwenj/news-backend:latest
     restart: unless-stopped
     env_file: .env
+    volumes:
+      - media_data:/app/media # 播客生成中暂存（终存 OSS）
     expose:
       - "8000"
     depends_on:
@@ -75,6 +77,8 @@ services:
     restart: unless-stopped
     env_file: .env
     command: celery -A app.tasks worker -Q media,default -c 2 -n media@%h
+    volumes:
+      - media_data:/app/media
     depends_on:
       redis:
         condition: service_healthy
@@ -107,3 +111,4 @@ services:
 
 volumes:
   pgdata:
+  media_data:

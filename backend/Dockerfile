@@ -21,6 +21,8 @@ RUN apt-get update \
 # 安全：非 root 运行
 RUN useradd -m appuser
 COPY --from=builder /app /app
+# 播客本地暂存目录（main.py 启动即 mkdir，需可写）
+RUN mkdir -p /app/media && chown -R appuser:appuser /app/media
 USER appuser
 
 ENV PATH="/app/.venv/bin:$PATH"
