@@ -34,8 +34,11 @@ export default function NewsListPage() {
   // 查询态：仅在用户动作（搜索/切标签/翻页/切拦截区）时整体变更，effect 只依赖它 → 每动作恰好一次请求
   const [query, setQuery] = useState({ page: 1, kw: "", tag: "", failed: false, seq: 0 });
   const seqRef = useRef(0); // 响应序号：仅接受最新一次（丢弃过期响应）
+  const listRef = useRef<HTMLDivElement>(null); // 列表滚动容器（翻页回顶）
 
   useEffect(() => {
+    // 翻页/筛选切换后列表回顶（滚动在列表内部）
+    listRef.current?.scrollTo({ top: 0 });
     // 定时器 + 清理：StrictMode 双调用时第一个被清掉，挂载也只发一次请求
     const timer = setTimeout(() => {
       const seq = ++seqRef.current;
@@ -71,7 +74,7 @@ export default function NewsListPage() {
   const search = () => setQueryPart({ kw: keyword });
 
   return (
-    <div className="space-y-4">
+    <div className="flex h-[calc(100dvh-108px)] flex-col gap-4">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold text-black dark:text-zinc-50">新闻列表</h1>
         <span className="text-sm text-zinc-400">{data ? `共 ${data.total} 条` : ""}</span>
@@ -131,19 +134,25 @@ export default function NewsListPage() {
         </div>
       </div>
 
-      {/* 列表 */}
-      {error && <p className="text-sm text-red-600">{error}</p>}
-      {loading && (
-        <div className="flex justify-center py-8">
-          <Spinner label={data ? "正在更新…" : "加载中…"} />
-        </div>
-      )}
-      {!loading && data && data.items.length === 0 && (
-        <p className="py-16 text-center text-sm text-zinc-400">
-          {showFailed ? "没有质检不通过的新闻" : "没有匹配的新闻"}
-        </p>
-      )}
-      <div className="space-y-3">
+      {/* 列表（滚动在列表内部，翻页/筛选后回到顶部；loading 覆盖不顶开） */}
+      <div className="relative min-h-0 flex-1">
+        {loading && data && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-zinc-50/60 backdrop-blur-[1px] dark:bg-black/60">
+            <Spinner label="正在更新…" />
+          </div>
+        )}
+        {loading && !data && (
+          <div className="flex h-full items-center justify-center">
+            <Spinner />
+          </div>
+        )}
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        {!loading && data && data.items.length === 0 && (
+          <p className="py-16 text-center text-sm text-zinc-400">
+            {showFailed ? "没有质检不通过的新闻" : "没有匹配的新闻"}
+          </p>
+        )}
+        <div ref={listRef} className="h-full space-y-3 overflow-y-auto pr-1">
         {data?.items.map((a) => (
           <a
             key={a.id}
@@ -180,11 +189,12 @@ export default function NewsListPage() {
             </div>
           </a>
         ))}
+        </div>
       </div>
 
-      {/* 分页 */}
+      {/* 分页（固定页面底部） */}
       {data && data.total > data.page_size && (
-        <div className="flex items-center justify-center gap-3 pt-2 text-sm">
+        <div className="flex shrink-0 items-center justify-center gap-3 text-sm">
           <button
             type="button"
             disabled={page <= 1}
