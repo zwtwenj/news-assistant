@@ -1,9 +1,10 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Cookie, Request, Response
+from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 
 from app.api.deps import ACCESS_COOKIE, DB, REFRESH_COOKIE
 from app.core.config import get_settings
+from app.core.errcode import REFRESH_INVALID, ApiError
 from app.schemas.auth import CaptchaOut, LoginIn, RefreshIn, SmsSendIn, TokenPair
 from app.services.auth import service as auth_svc
 
@@ -73,10 +74,11 @@ def refresh(
 ) -> TokenPair:
     raw = body.refresh_token or refresh_token
     if not raw:
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=401, detail="缺少 refresh token")
-    pair = auth_svc.rotate_refresh(db, raw)
+        raise ApiError(401, REFRESH_INVALID, "缺少 refresh token")
+    try:
+        pair = auth_svc.rotate_refresh(db, raw)
+    except HTTPException as exc:  # 失效/过期/重放攻击 → 统一标 40102（前端据此登出）
+        raise ApiError(401, REFRESH_INVALID, str(exc.detail)) from exc
     _set_auth_cookies(response, pair)
     return pair
 
