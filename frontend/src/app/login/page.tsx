@@ -27,7 +27,8 @@ export default function LoginPage() {
   }, []);
 
   useEffect(() => {
-    void fetchCaptcha();
+    const captchaTimer = setTimeout(() => void fetchCaptcha(), 0); // StrictMode 双挂载只取一次
+    return () => clearTimeout(captchaTimer);
     return () => {
       if (timer.current) clearInterval(timer.current);
     };

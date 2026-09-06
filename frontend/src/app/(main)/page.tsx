@@ -35,9 +35,12 @@ export default function DashboardPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api<Stats>("/news/stats")
-      .then(setStats)
-      .catch((e) => setError(String(e instanceof Error ? e.message : e)));
+    const timer = setTimeout(() => {
+      api<Stats>("/news/stats")
+        .then(setStats)
+        .catch((e) => setError(String(e instanceof Error ? e.message : e)));
+    }, 0);
+    return () => clearTimeout(timer);
   }, []);
 
   if (error) {

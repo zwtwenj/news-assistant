@@ -29,7 +29,11 @@ export default function PodcastWizardPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api<Host[]>("/hosts").then(setHosts).catch(() => {});
+    // 定时器 + 清理：StrictMode 双挂载只发一次请求
+    const timer = setTimeout(() => {
+      api<Host[]>("/hosts").then(setHosts).catch(() => {});
+    }, 0);
+    return () => clearTimeout(timer);
   }, []);
 
   const togglePlay = (h: Host) => {

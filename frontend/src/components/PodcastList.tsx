@@ -41,7 +41,8 @@ export default function PodcastList() {
   }, []);
 
   useEffect(() => {
-    void load();
+    const timer = setTimeout(() => void load(), 0); // StrictMode 双挂载只发一次
+    return () => clearTimeout(timer);
   }, [load]);
 
   // 存在进行中的任务时 5s 轮询（点击生成即入库，失败项也留在列表）
