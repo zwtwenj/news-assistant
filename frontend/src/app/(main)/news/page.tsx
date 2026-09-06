@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import Spinner from "@/components/Spinner";
 import { api } from "@/lib/api";
 
 type Article = {
@@ -132,7 +133,11 @@ export default function NewsListPage() {
 
       {/* 列表 */}
       {error && <p className="text-sm text-red-600">{error}</p>}
-      {loading && <p className="text-sm text-zinc-400">加载中…</p>}
+      {loading && (
+        <div className="flex justify-center py-8">
+          <Spinner label={data ? "正在更新…" : "加载中…"} />
+        </div>
+      )}
       {!loading && data && data.items.length === 0 && (
         <p className="py-16 text-center text-sm text-zinc-400">
           {showFailed ? "没有质检不通过的新闻" : "没有匹配的新闻"}
