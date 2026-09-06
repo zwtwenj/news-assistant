@@ -102,7 +102,7 @@ def fetch_feeds(self) -> str:
     db = SessionLocal()
     added = skipped = 0
     try:
-        feeds = db.query(Feed).filter(Feed.enabled.is_(True)).all()
+        feeds = db.query(Feed).filter(Feed.enabled.is_(True), Feed.deleted_at.is_(None)).all()
         feed_stats = {}
         for feed in feeds:
             try:
