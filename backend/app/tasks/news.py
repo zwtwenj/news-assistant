@@ -18,6 +18,7 @@ from langfuse import observe
 from loguru import logger
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
+from zoneinfo import ZoneInfo
 
 from app.core.redis_client import redis_client
 from app.db.session import SessionLocal
@@ -419,7 +420,7 @@ def reconcile_vectors(self) -> str:
 )
 @observe()
 def run_daily_pipeline(self) -> str:
-    today = datetime.now(UTC).strftime("%Y%m%d")
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d")  # 北京日期：须与 beat 调度时区一致；按 UTC 计日期时，02:00 触发刻 UTC 仍在前一天，会把当晚调度误判为已执行
     lock_key = f"pipeline:lock:{today}"
     if not redis_client.set(lock_key, "1", nx=True, ex=86400):
         logger.info("pipeline 今日已执行过（lock={}），跳过", lock_key)
