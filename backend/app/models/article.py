@@ -15,7 +15,8 @@ class Article(Base):
     __tablename__ = "articles"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    feed_id: Mapped[int] = mapped_column(ForeignKey("feeds.id"), index=True)
+    # nullable：后管手动添加的新闻无采集源（来源用手填 source 文本，仅展示）
+    feed_id: Mapped[int | None] = mapped_column(ForeignKey("feeds.id"), index=True)
     url: Mapped[str] = mapped_column(String(1000), unique=True)
     title: Mapped[str] = mapped_column(String(500))
     source: Mapped[str] = mapped_column(String(200))  # 归属（合规保留来源）
