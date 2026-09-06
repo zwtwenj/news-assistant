@@ -88,6 +88,20 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
     throw new ApiError(NETWORK_MESSAGE, -1);
   }
 
+  // 反向代理下后端不可达的两种形态都按网络不可达处理（不登出）：
+  // ① 502/503/504（nginx 网关错误）② 500 且响应体非 JSON（Next dev 代理错误页）
+  if ([502, 503, 504].includes(resp.status)) {
+    throw new ApiError(NETWORK_MESSAGE, -1);
+  }
+  if (resp.status === 500) {
+    const text = await resp.text();
+    try {
+      JSON.parse(text);
+    } catch {
+      throw new ApiError(NETWORK_MESSAGE, -1);
+    }
+    throw new ApiError("服务器开小差了，请稍后重试", 500, 50000);
+  }
   // access 过期：静默续期一次后重放（40101 与旧后端无 code 的 401 都走这里）
   if (resp.status === 401 && !path.startsWith("/auth/")) {
     const body = (await resp.clone().json().catch(() => ({}))) as ErrorEnvelope;
