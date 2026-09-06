@@ -112,8 +112,22 @@ def list_articles(
     if tag.strip():
         q = q.filter(Article.tags.contains([tag.strip()]))  # jsonb @> 精确包含
     total = q.count()
+    # 列表只取展示所需列：摘要在 SQL 侧 coalesce+left 截断，
+    # 不传输整列正文（跨境带宽下 20 篇全文 ~24KB 是数秒级开销）
     rows = (
-        q.order_by(Article.publish_time.desc().nulls_last(), Article.id.desc())
+        q.with_entities(
+            Article.id,
+            Article.title,
+            Article.source,
+            Article.publish_time,
+            func.coalesce(Article.summary, func.left(Article.content, 100), ""),
+            Article.tags,
+            Article.url,
+            Article.content_quality,
+            Article.fetch_error,
+            Article.ai_error,
+        )
+        .order_by(Article.publish_time.desc().nulls_last(), Article.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
@@ -130,20 +144,31 @@ def list_articles(
         "page_size": page_size,
         "items": [
             {
-                "id": a.id,
-                "title": a.title,
-                "source": a.source,
-                "publish_time": _fmt(a.publish_time),
-                "summary": a.summary or (a.content or "")[:100],
-                "tags": a.tags or [],
-                "url": a.url,
-                "content_quality": a.content_quality,
+                "id": id_,
+                "title": title,
+                "source": source,
+                "publish_time": _fmt(publish_time),
+                "summary": summary,
+                "tags": tags or [],
+                "url": url,
+                "content_quality": content_quality,
                 # 失败原因：规则质检在 fetch_error，语义检测在 ai_error，判重在 fetch_error；
                 # 存量回填的 bad（未走过门禁）给固定说明
-                "fail_reason": a.fetch_error or a.ai_error or (
-                    "存量质检回填（未记录具体原因）" if a.content_quality == "bad" else None
+                "fail_reason": fetch_error or ai_error or (
+                    "存量质检回填（未记录具体原因）" if content_quality == "bad" else None
                 ),
             }
-            for a in rows
+            for (
+                id_,
+                title,
+                source,
+                publish_time,
+                summary,
+                tags,
+                url,
+                content_quality,
+                fetch_error,
+                ai_error,
+            ) in rows
         ],
     }
