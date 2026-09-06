@@ -33,10 +33,16 @@
 
 ## 本地开发
 
-### 1. 基础设施
+### 1. 基础设施（二选一）
 
 ```bash
+# 方式 A：本地 Docker（默认）
 docker compose up -d        # PG(5432) + Redis(6379)
+
+# 方式 B：直连服务器容器（本地无需 Docker）
+cd backend && uv run python scripts/switch_infra.py server
+# 切换会改写 .env 的 DATABASE_URL/REDIS_URL（server 连接串缓存于 infra-server.env）
+# 之后再切回本地：uv run python scripts/switch_infra.py local
 ```
 
 ### 2. 后端
