@@ -10,10 +10,13 @@ from app.core.config import get_settings
 _ALGO = "HS256"
 
 
-def create_access_token(user_id: int, scope: str = "user") -> tuple[str, int]:
-    """返回 (token, 有效期秒数)。scope：user（C 端）/ admin（后管），双向隔离。"""
+def create_access_token(
+    user_id: int, scope: str = "user", ttl_minutes: int | None = None
+) -> tuple[str, int]:
+    """返回 (token, 有效期秒数)。scope：user（C 端）/ admin（后管），双向隔离。
+    ttl_minutes 不传用配置默认；dev 测试登录传长有效期免频繁过期。"""
     settings = get_settings()
-    ttl = settings.jwt_access_ttl_minutes * 60
+    ttl = (ttl_minutes or settings.jwt_access_ttl_minutes) * 60
     now = datetime.now(UTC)
     payload: dict[str, Any] = {
         "sub": str(user_id),

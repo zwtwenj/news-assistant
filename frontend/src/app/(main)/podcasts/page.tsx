@@ -1,8 +1,12 @@
 "use client";
 
+import { Check, Loader2, Mic, Mic2, Play, Square, User } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 
 type Host = {
@@ -12,6 +16,44 @@ type Host = {
   description: string | null;
   sample_url: string | null;
 };
+
+const DURATIONS = [
+  { value: 2, label: "短", hint: "1~2 分钟 · 1 条素材" },
+  { value: 4, label: "中", hint: "3~5 分钟 · 最多 3 条" },
+  { value: 7, label: "长", hint: "5~8 分钟 · 最多 5 条" },
+];
+
+function Stepper({ step }: { step: 1 | 2 }) {
+  const dot = (n: 1 | 2, text: string) => {
+    const active = step === n;
+    const done = step > n;
+    return (
+      <span className="flex items-center gap-2">
+        <span
+          className={
+            done
+              ? "flex size-6 items-center justify-center rounded-full bg-primary text-primary-foreground"
+              : active
+                ? "flex size-6 items-center justify-center rounded-full bg-primary text-primary-foreground"
+                : "flex size-6 items-center justify-center rounded-full border border-border text-muted-foreground"
+          }
+        >
+          {done ? <Check className="size-3.5" /> : n}
+        </span>
+        <span className={active || done ? "font-medium text-foreground" : "text-muted-foreground"}>
+          {text}
+        </span>
+      </span>
+    );
+  };
+  return (
+    <div className="flex items-center gap-3 text-sm">
+      {dot(1, "模式与主播")}
+      <span className="h-px w-8 bg-border" />
+      {dot(2, "想播点什么")}
+    </div>
+  );
+}
 
 export default function PodcastWizardPage() {
   const router = useRouter();
@@ -86,11 +128,7 @@ export default function PodcastWizardPage() {
     }
   };
 
-  const inputCls =
-    "w-full rounded-md border border-solid border-black/[.1] bg-white px-3 py-2 text-sm text-black outline-none focus:border-black dark:border-white/[.2] dark:bg-black dark:text-zinc-50 dark:focus:border-zinc-50";
-  const labelCls = "mb-1 block text-sm text-zinc-600 dark:text-zinc-400";
-
-  // 主播选择卡片：左上名字+radio 圆框，下方介绍，右侧试听
+  // 主播选择卡片：选中态 primary 描边 + 角标，性别图标，右侧试听
   const HostCard = ({
     host,
     selected,
@@ -105,25 +143,21 @@ export default function PodcastWizardPage() {
       onClick={onSelect}
       className={
         selected
-          ? "flex w-full items-center gap-3 rounded-lg border-2 border-solid border-foreground bg-white p-3 text-left dark:bg-black"
-          : "flex w-full items-center gap-3 rounded-lg border border-solid border-black/[.1] bg-white p-3 text-left hover:border-black/30 dark:border-white/[.15] dark:bg-black dark:hover:border-white/30"
+          ? "group relative flex w-full items-center gap-3 rounded-xl border-2 border-primary bg-card p-3.5 text-left shadow-sm"
+          : "flex w-full items-center gap-3 rounded-xl border border-border bg-card p-3.5 text-left transition-colors hover:border-primary/40"
       }
     >
-      <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-2">
-          {/* radio 圆框 */}
-          <span
-            className={
-              selected
-                ? "flex h-4 w-4 items-center justify-center rounded-full border-2 border-foreground"
-                : "flex h-4 w-4 items-center justify-center rounded-full border-2 border-zinc-300 dark:border-zinc-600"
-            }
-          >
-            {selected && <span className="h-2 w-2 rounded-full bg-foreground" />}
-          </span>
-          <span className="truncate text-sm font-medium text-black dark:text-zinc-50">{host.name}</span>
+      {selected && (
+        <span className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
+          <Check className="size-3" />
         </span>
-        <span className="mt-1 line-clamp-2 block pl-6 text-xs text-zinc-500">
+      )}
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+        {host.gender === "female" ? <Mic2 className="size-4.5" /> : <Mic className="size-4.5" />}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium text-foreground">{host.name}</span>
+        <span className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">
           {host.description || "暂无介绍"}
         </span>
       </span>
@@ -144,141 +178,176 @@ export default function PodcastWizardPage() {
           }}
           className={
             playingId === host.id
-              ? "animate-pulse rounded-full bg-blue-100 px-2 py-1 text-sm text-blue-600 dark:bg-blue-900/40"
-              : "rounded-full bg-zinc-100 px-2 py-1 text-sm text-zinc-500 hover:text-blue-600 dark:bg-zinc-800"
+              ? "flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground"
+              : "flex size-8 shrink-0 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
           }
         >
-          {playingId === host.id ? "⏹" : "▶"}
+          {playingId === host.id ? (
+            <Square className="size-3 fill-current" />
+          ) : (
+            <Play className="size-3 translate-x-px fill-current" />
+          )}
         </span>
       )}
     </button>
   );
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-black dark:text-zinc-50">播客生成</h1>
+    <div className="mx-auto max-w-3xl space-y-6">
+      <div>
+        <h1 className="text-xl font-semibold text-foreground">播客生成</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          两步创建你的专属新闻播客：选择主播，告诉它想播什么
+        </p>
+      </div>
 
-      <div className="rounded-lg border border-solid border-black/[.06] bg-white p-5 dark:border-white/[.12] dark:bg-black">
-        <div className="mb-4 flex gap-2 text-sm">
-          <span className={step === 1 ? "font-semibold text-black dark:text-zinc-50" : "text-zinc-400"}>
-            ① 模式与主播
-          </span>
-          <span className="text-zinc-300">→</span>
-          <span className={step === 2 ? "font-semibold text-black dark:text-zinc-50" : "text-zinc-400"}>
-            ② 想播点什么
-          </span>
-        </div>
+      <Card>
+        <CardContent className="space-y-6">
+          <Stepper step={step} />
 
-        {step === 1 && (
-          <div className="max-w-2xl space-y-4">
-            <div>
-              <span className={labelCls}>模式</span>
-              <div className="flex gap-2">
-                {(["single", "dual"] as const).map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => setMode(m)}
-                    className={
-                      mode === m
-                        ? "rounded-md bg-foreground px-4 py-2 text-sm text-background"
-                        : "rounded-md border border-solid border-black/[.1] px-4 py-2 text-sm text-zinc-600 dark:border-white/[.2] dark:text-zinc-400"
-                    }
-                  >
-                    {m === "single" ? "单人独白" : "双人对谈"}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <span className={labelCls}>{mode === "dual" ? "主播 A" : "选择主播"}</span>
-              {hosts.length === 0 ? (
-                <p className="text-sm text-zinc-400">暂无可用主播</p>
-              ) : (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {hosts.map((h) => (
-                    <HostCard key={h.id} host={h} selected={hostA === h.id} onSelect={() => setHostA(h.id)} />
+          {step === 1 && (
+            <div className="space-y-5">
+              <div>
+                <p className="mb-2 text-sm font-medium text-foreground">播出形式</p>
+                <div className="grid grid-cols-2 gap-3">
+                  {(
+                    [
+                      { value: "single", title: "单人独白", desc: "一位主播娓娓道来" },
+                      { value: "dual", title: "双人对谈", desc: "两位主播观点碰撞" },
+                    ] as const
+                  ).map((m) => (
+                    <button
+                      key={m.value}
+                      type="button"
+                      onClick={() => setMode(m.value)}
+                      className={
+                        mode === m.value
+                          ? "relative rounded-xl border-2 border-primary bg-card p-3.5 text-left"
+                          : "rounded-xl border border-border bg-card p-3.5 text-left transition-colors hover:border-primary/40"
+                      }
+                    >
+                      {mode === m.value && (
+                        <span className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                          <Check className="size-3" />
+                        </span>
+                      )}
+                      <span className="block text-sm font-medium text-foreground">{m.title}</span>
+                      <span className="mt-0.5 block text-xs text-muted-foreground">{m.desc}</span>
+                    </button>
                   ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="mb-2 flex items-center gap-1.5 text-sm font-medium text-foreground">
+                  <User className="size-4 text-muted-foreground" />
+                  {mode === "dual" ? "主播 A" : "选择主播"}
+                </p>
+                {hosts.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">暂无可用主播</p>
+                ) : (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {hosts.map((h) => (
+                      <HostCard
+                        key={h.id}
+                        host={h}
+                        selected={hostA === h.id}
+                        onSelect={() => setHostA(h.id)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {mode === "dual" && (
+                <div>
+                  <p className="mb-2 flex items-center gap-1.5 text-sm font-medium text-foreground">
+                    <User className="size-4 text-muted-foreground" />
+                    主播 B（需与 A 不同）
+                  </p>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {hosts.map((h) => (
+                      <HostCard
+                        key={h.id}
+                        host={h}
+                        selected={hostB === h.id}
+                        onSelect={() => setHostB(h.id)}
+                      />
+                    ))}
+                  </div>
                 </div>
               )}
-            </div>
 
-            {mode === "dual" && (
+              <Button size="lg" className="w-full sm:w-auto" disabled={!step1Valid} onClick={() => setStep(2)}>
+                下一步
+              </Button>
+            </div>
+          )}
+
+          {step === 2 && (
+            <div className="space-y-5">
               <div>
-                <span className={labelCls}>主播 B（需与 A 不同）</span>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {hosts.map((h) => (
-                    <HostCard key={h.id} host={h} selected={hostB === h.id} onSelect={() => setHostB(h.id)} />
+                <p className="mb-2 text-sm font-medium text-foreground">播客时长</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {DURATIONS.map((d) => (
+                    <button
+                      key={d.value}
+                      type="button"
+                      onClick={() => setTargetMinutes(d.value)}
+                      className={
+                        targetMinutes === d.value
+                          ? "rounded-xl border-2 border-primary bg-primary/5 px-3 py-2.5 text-left"
+                          : "rounded-xl border border-border px-3 py-2.5 text-left transition-colors hover:border-primary/40"
+                      }
+                    >
+                      <span className="block text-sm font-medium text-foreground">{d.label}</span>
+                      <span className="mt-0.5 block text-xs text-muted-foreground">{d.hint}</span>
+                    </button>
                   ))}
                 </div>
-              </div>
-            )}
-
-            <button
-              type="button"
-              disabled={!step1Valid}
-              onClick={() => setStep(2)}
-              className="rounded-md bg-foreground px-5 py-2 text-sm text-background disabled:opacity-40"
-            >
-              下一步
-            </button>
-          </div>
-        )}
-
-        {step === 2 && (
-          <div className="max-w-xl space-y-4">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div>
-                <label className={labelCls}>播客时长</label>
-                <select
-                  value={targetMinutes}
-                  onChange={(e) => setTargetMinutes(Number(e.target.value))}
-                  className={inputCls}
-                >
-                  <option value={2}>短（1~2 分钟）· 1 条素材</option>
-                  <option value={4}>中（3~5 分钟）· 最多 3 条素材</option>
-                  <option value={7}>长（5~8 分钟）· 最多 5 条素材</option>
-                </select>
-                <p className="mt-1 text-xs text-zinc-400">
+                <p className="mt-1.5 text-xs text-muted-foreground">
                   素材不足时对已有内容深聊，只有完全无相关新闻才会拒绝生成
                 </p>
               </div>
+
               <div>
-                <label className={labelCls}>话题提示词（想播点什么，将检索近 7 天相关新闻，优先最新）</label>
-                <textarea
+                <p className="mb-2 text-sm font-medium text-foreground">话题提示词</p>
+                <Textarea
                   value={topic}
                   onChange={(e) => setTopic(e.target.value)}
-                  rows={3}
+                  rows={4}
+                  maxLength={500}
                   placeholder="例如：生成一份有关最近天气的播客"
-                  className={inputCls}
+                  className="resize-none"
                 />
+                <p className="mt-1 text-right text-xs text-muted-foreground">
+                  {topic.length} / 500 · 将检索近 7 天相关新闻，优先最新
+                </p>
               </div>
+
+              {error && <p className="text-sm text-destructive">{error}</p>}
+
+              <div className="flex items-center gap-3">
+                <Button variant="outline" size="lg" onClick={() => setStep(1)} disabled={submitting}>
+                  上一步
+                </Button>
+                <Button
+                  size="lg"
+                  className="flex-1 sm:flex-none sm:px-8"
+                  disabled={!topic.trim() || submitting}
+                  onClick={() => void submit()}
+                >
+                  {submitting && <Loader2 className="size-4 animate-spin" />}
+                  {submitting ? "提交中…" : "开始生成"}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                每小时限 3 次、每天限 10 次；点击生成后立即排队（列表中可见），全流程约 1~3 分钟
+              </p>
             </div>
-            <p className="text-xs text-zinc-400">
-              每小时限 3 次、每天限 10 次；点击生成后立即排队（列表中可见），全流程约 1~3 分钟
-            </p>
-            {error && <p className="text-sm text-red-600">{error}</p>}
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setStep(1)}
-                className="rounded-md border border-solid border-black/[.1] px-5 py-2 text-sm dark:border-white/[.2]"
-              >
-                上一步
-              </button>
-              <button
-                type="button"
-                disabled={!topic.trim() || submitting}
-                onClick={() => void submit()}
-                className="rounded-md bg-foreground px-5 py-2 text-sm text-background disabled:opacity-40"
-              >
-                {submitting ? "提交中…" : "开始生成"}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

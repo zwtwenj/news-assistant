@@ -5,8 +5,10 @@ from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from app.api.deps import ACCESS_COOKIE, DB, REFRESH_COOKIE
 from app.core.config import get_settings
 from app.core.errcode import REFRESH_INVALID, ApiError
-from app.schemas.auth import CaptchaOut, LoginIn, RefreshIn, SmsSendIn, TokenPair
+from app.models.user import User
+from app.schemas.auth import CaptchaOut, DevLoginIn, LoginIn, RefreshIn, SmsSendIn, TokenPair, UserOut
 from app.services.auth import service as auth_svc
+from app.services.auth.jwt import create_access_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -30,16 +32,17 @@ def _set_auth_cookies(response: Response, pair: TokenPair) -> None:
         secure=secure,
         max_age=pair.access_expires_in,
     )
-    # refresh cookie 只在 auth 路径下携带，缩小暴露面
-    response.set_cookie(
-        REFRESH_COOKIE,
-        pair.refresh_token,
-        httponly=True,
-        samesite="lax",
-        secure=secure,
-        max_age=settings.jwt_refresh_ttl_days * 86400,
-        path="/api/v1/auth",
-    )
+    # refresh cookie 只在 auth 路径下携带，缩小暴露面（dev-login 无 refresh 不种）
+    if pair.refresh_token:
+        response.set_cookie(
+            REFRESH_COOKIE,
+            pair.refresh_token,
+            httponly=True,
+            samesite="lax",
+            secure=secure,
+            max_age=settings.jwt_refresh_ttl_days * 86400,
+            path="/api/v1/auth",
+        )
 
 
 def _clear_auth_cookies(response: Response) -> None:
@@ -61,6 +64,30 @@ def send_sms(body: SmsSendIn, request: Request) -> None:
 @router.post("/login")
 def login(body: LoginIn, db: DB, response: Response) -> TokenPair:
     pair = auth_svc.login_with_code(db, body.phone, body.code)
+    _set_auth_cookies(response, pair)
+    return pair
+
+
+@router.post("/dev-login", include_in_schema=False)
+def dev_login(body: DevLoginIn, db: DB, response: Response) -> TokenPair:
+    """本地开发测试登录：免短信，签发 30 天 access token（生产 env=prod 返回 404）。"""
+    if get_settings().env == "prod":
+        raise HTTPException(status_code=404, detail="Not Found")
+    user = db.query(User).filter(User.phone == body.phone).first()
+    if user is None:
+        user = User(phone=body.phone)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    elif user.status == "banned":
+        raise HTTPException(status_code=403, detail="账号已被禁用")
+    access, ttl = create_access_token(user.id, ttl_minutes=30 * 24 * 60)  # 30 天
+    pair = TokenPair(
+        access_token=access,
+        refresh_token="",
+        access_expires_in=ttl,
+        user=UserOut.model_validate(user),
+    )
     _set_auth_cookies(response, pair)
     return pair
 

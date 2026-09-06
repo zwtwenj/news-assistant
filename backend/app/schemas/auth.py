@@ -47,6 +47,19 @@ class RefreshIn(BaseModel):
     refresh_token: str | None = None
 
 
+class DevLoginIn(BaseModel):
+    """本地开发测试登录（跳过短信）；生产环境端点 404。"""
+
+    phone: str
+
+    @field_validator("phone")
+    @classmethod
+    def check_phone(cls, v: str) -> str:
+        if not PHONE_RE.match(v):
+            raise ValueError("手机号格式不正确")
+        return v
+
+
 class UserOut(BaseModel):
     id: int
     phone: str
