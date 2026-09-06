@@ -11,6 +11,7 @@ import random
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 from celery import Task, chain
@@ -18,7 +19,6 @@ from langfuse import observe
 from loguru import logger
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
-from zoneinfo import ZoneInfo
 
 from app.core.redis_client import redis_client
 from app.db.session import SessionLocal
@@ -415,16 +415,29 @@ def reconcile_vectors(self) -> str:
 
 # ---------- 每日编排 ----------
 
+PIPELINE_RUNNING_TTL = 3 * 3600  # 并发闸：覆盖最长时长；链中断后自动过期，当日可补跑
+PIPELINE_DONE_TTL = 172800  # 成功标记：48h，覆盖次日补跑窗口
+
+
 @celery_app.task(  # 不用 BaseTask：编排任务失败重试会重复 dispatch，防重入锁兜底 + 人工介入
     bind=True, name="app.tasks.news.run_daily_pipeline", base=Task,
 )
 @observe()
 def run_daily_pipeline(self) -> str:
-    today = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d")  # 北京日期：须与 beat 调度时区一致；按 UTC 计日期时，02:00 触发刻 UTC 仍在前一天，会把当晚调度误判为已执行
-    lock_key = f"pipeline:lock:{today}"
-    if not redis_client.set(lock_key, "1", nx=True, ex=86400):
-        logger.info("pipeline 今日已执行过（lock={}），跳过", lock_key)
-        return "今日已执行，跳过"
+    # 北京日期，须与 beat 调度时区一致（UTC 计日会把 02:00 调度误判为前一天已执行）
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d")
+    done_key = f"pipeline:done:{today}"
+    running_key = f"pipeline:running:{today}"
+    # 双 key：done=成功标记（一天只成功跑一次）；running=并发闸（短 TTL）。
+    # 链中断（worker 崩溃/被杀）时链尾 mark_pipeline_done 不会执行 → done 不落 →
+    # running 过期后当日可补跑；阶段业务性失败（如 LLM 挂）链仍走完 → done 落 →
+    # 次日 _reset_compensable_failed 自动补偿重试。
+    if redis_client.get(done_key):
+        logger.info("pipeline 今日已成功（done={}），跳过", done_key)
+        return "今日已成功，跳过"
+    if not redis_client.set(running_key, "1", nx=True, ex=PIPELINE_RUNNING_TTL):
+        logger.info("pipeline 正在执行中（running={}），跳过", running_key)
+        return "执行中，跳过"
 
     db = SessionLocal()
     try:
@@ -441,7 +454,16 @@ def run_daily_pipeline(self) -> str:
         analyze_articles.si(),
         embed_articles.si(),
         reconcile_vectors.si(),  # 每日对账：清 Milvus 孤儿向量（bad/删除/判重的残留）
+        mark_pipeline_done.si(today),  # 链尾成功标记：链被打断则不落 done，当日可补跑
     ).apply_async()
     logger.info("daily pipeline 已触发（补偿 {} 项）", compensated)
     _finish_trace(stage="orchestrate", compensated=compensated)
     return f"pipeline 已触发（补偿 {compensated} 项）"
+
+
+@celery_app.task(name="app.tasks.news.mark_pipeline_done")
+def mark_pipeline_done(day: str) -> str:
+    """链尾标记：整条流水线走完（各阶段已消化自身失败）才算当日完成。"""
+    redis_client.set(f"pipeline:done:{day}", "1", ex=PIPELINE_DONE_TTL)
+    logger.info("pipeline 当日全部阶段完成（done={}）", day)
+    return "done"
