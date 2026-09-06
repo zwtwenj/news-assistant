@@ -15,11 +15,8 @@ class PodcastCreate(BaseModel):
     mode: str  # single / dual
     topic_prompt: str
     target_minutes: int = Field(4, ge=1, le=10)  # 目标时长（分钟）：素材上限与脚本长度由它驱动
-    voice_a: str
-    voice_b: str | None = None
-    script_prompt: str | None = None
-    script_prompt_a: str | None = None
-    script_prompt_b: str | None = None
+    host_a: int  # 主播（admin_hosts.id）：后端解析音色 + 人设，快照落库
+    host_b: int | None = None
 
     @field_validator("topic_prompt")
     @classmethod
@@ -33,24 +30,11 @@ class PodcastCreate(BaseModel):
     def check_mode_fields(self) -> "PodcastCreate":
         if self.mode not in ("single", "dual"):
             raise ValueError("mode 只能为 single 或 dual")
-        if self.mode == "single":
-            if not (self.script_prompt and self.script_prompt.strip()):
-                raise ValueError("单人模式需要脚本提示词（风格设定）")
-        else:
-            if not (self.script_prompt_a and self.script_prompt_a.strip()):
-                raise ValueError("双人模式需要 A 的脚本提示词（人设）")
-            if not (self.script_prompt_b and self.script_prompt_b.strip()):
-                raise ValueError("双人模式需要 B 的脚本提示词（人设）")
-            if not self.voice_b:
-                raise ValueError("双人模式需要选择 B 的音色")
-            if self.voice_b == self.voice_a:
-                raise ValueError("双人模式两个音色不能相同")
-        for f in ("script_prompt", "script_prompt_a", "script_prompt_b"):
-            v = getattr(self, f)
-            if v and len(v) > PROMPT_MAX:
-                raise ValueError(f"{f} 超过 {PROMPT_MAX} 字上限")
-            if v is not None:
-                setattr(self, f, v.strip())
+        if self.mode == "dual":
+            if not self.host_b:
+                raise ValueError("双人模式需要选择 B 的主播")
+            if self.host_b == self.host_a:
+                raise ValueError("双人模式两位主播不能相同")
         return self
 
 

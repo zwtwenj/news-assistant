@@ -1,62 +1,79 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 
-type Voice = { id: string; name: string; gender: string };
+type Host = {
+  id: number;
+  name: string;
+  gender: string;
+  description: string | null;
+  sample_url: string | null;
+};
 
 export default function PodcastWizardPage() {
   const router = useRouter();
   // 两步向导状态
   const [step, setStep] = useState<1 | 2>(1);
   const [mode, setMode] = useState<"single" | "dual">("single");
-  const [voices, setVoices] = useState<Voice[]>([]);
-  const [voiceA, setVoiceA] = useState("");
-  const [voiceB, setVoiceB] = useState("");
-  const [scriptPrompt, setScriptPrompt] = useState("");
-  const [promptA, setPromptA] = useState("");
-  const [promptB, setPromptB] = useState("");
+  const [hosts, setHosts] = useState<Host[]>([]);
+  const [hostA, setHostA] = useState<number | null>(null);
+  const [hostB, setHostB] = useState<number | null>(null);
+  const [playingId, setPlayingId] = useState<number | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null); // 单实例试听（同时只播一个）
   const [topic, setTopic] = useState("");
   const [targetMinutes, setTargetMinutes] = useState(4);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api<Voice[]>("/podcasts/voices").then(setVoices).catch(() => {});
+    api<Host[]>("/hosts").then(setHosts).catch(() => {});
   }, []);
 
+  const togglePlay = (h: Host) => {
+    if (!h.sample_url) return;
+    const audio = audioRef.current ?? new Audio();
+    audioRef.current = audio;
+    if (playingId === h.id) {
+      audio.pause();
+      audio.currentTime = 0;
+      setPlayingId(null);
+      return;
+    }
+    audio.pause();
+    audio.currentTime = 0;
+    audio.src = h.sample_url;
+    audio.onended = () => setPlayingId(null);
+    audio.onerror = () => setPlayingId(null);
+    void audio.play().then(() => setPlayingId(h.id)).catch(() => setPlayingId(null));
+  };
+
+  useEffect(
+    () => () => {
+      audioRef.current?.pause();
+    },
+    []
+  );
+
   const step1Valid =
-    mode === "single"
-      ? !!voiceA && scriptPrompt.trim().length > 0
-      : !!voiceA && !!voiceB && voiceA !== voiceB && promptA.trim() && promptB.trim();
+    mode === "single" ? hostA != null : hostA != null && hostB != null && hostA !== hostB;
 
   const submit = async () => {
+    if (hostA == null) return;
     setSubmitting(true);
     setError("");
     try {
       await api("/podcasts", {
         method: "POST",
-        body: JSON.stringify(
-          mode === "single"
-            ? {
-                mode,
-                topic_prompt: topic,
-                target_minutes: targetMinutes,
-                voice_a: voiceA,
-                script_prompt: scriptPrompt,
-              }
-            : {
-                mode,
-                topic_prompt: topic,
-                target_minutes: targetMinutes,
-                voice_a: voiceA,
-                voice_b: voiceB,
-                script_prompt_a: promptA,
-                script_prompt_b: promptB,
-              }
-        ),
+        body: JSON.stringify({
+          mode,
+          topic_prompt: topic,
+          target_minutes: targetMinutes,
+          host_a: hostA,
+          host_b: mode === "dual" ? hostB : null,
+        }),
       });
       router.push("/podcasts/history"); // 已入库排队，去列表页看进度
     } catch (e) {
@@ -69,6 +86,70 @@ export default function PodcastWizardPage() {
     "w-full rounded-md border border-solid border-black/[.1] bg-white px-3 py-2 text-sm text-black outline-none focus:border-black dark:border-white/[.2] dark:bg-black dark:text-zinc-50 dark:focus:border-zinc-50";
   const labelCls = "mb-1 block text-sm text-zinc-600 dark:text-zinc-400";
 
+  // 主播选择卡片：左上名字+radio 圆框，下方介绍，右侧试听
+  const HostCard = ({
+    host,
+    selected,
+    onSelect,
+  }: {
+    host: Host;
+    selected: boolean;
+    onSelect: () => void;
+  }) => (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={
+        selected
+          ? "flex w-full items-center gap-3 rounded-lg border-2 border-solid border-foreground bg-white p-3 text-left dark:bg-black"
+          : "flex w-full items-center gap-3 rounded-lg border border-solid border-black/[.1] bg-white p-3 text-left hover:border-black/30 dark:border-white/[.15] dark:bg-black dark:hover:border-white/30"
+      }
+    >
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2">
+          {/* radio 圆框 */}
+          <span
+            className={
+              selected
+                ? "flex h-4 w-4 items-center justify-center rounded-full border-2 border-foreground"
+                : "flex h-4 w-4 items-center justify-center rounded-full border-2 border-zinc-300 dark:border-zinc-600"
+            }
+          >
+            {selected && <span className="h-2 w-2 rounded-full bg-foreground" />}
+          </span>
+          <span className="truncate text-sm font-medium text-black dark:text-zinc-50">{host.name}</span>
+        </span>
+        <span className="mt-1 line-clamp-2 block pl-6 text-xs text-zinc-500">
+          {host.description || "暂无介绍"}
+        </span>
+      </span>
+      {host.sample_url && (
+        <span
+          role="button"
+          tabIndex={0}
+          title={playingId === host.id ? "停止试听" : "试听"}
+          onClick={(e) => {
+            e.stopPropagation(); // 点试听不触发选卡
+            togglePlay(host);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.stopPropagation();
+              togglePlay(host);
+            }
+          }}
+          className={
+            playingId === host.id
+              ? "animate-pulse rounded-full bg-blue-100 px-2 py-1 text-sm text-blue-600 dark:bg-blue-900/40"
+              : "rounded-full bg-zinc-100 px-2 py-1 text-sm text-zinc-500 hover:text-blue-600 dark:bg-zinc-800"
+          }
+        >
+          {playingId === host.id ? "⏹" : "▶"}
+        </span>
+      )}
+    </button>
+  );
+
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-semibold text-black dark:text-zinc-50">播客生成</h1>
@@ -76,7 +157,7 @@ export default function PodcastWizardPage() {
       <div className="rounded-lg border border-solid border-black/[.06] bg-white p-5 dark:border-white/[.12] dark:bg-black">
         <div className="mb-4 flex gap-2 text-sm">
           <span className={step === 1 ? "font-semibold text-black dark:text-zinc-50" : "text-zinc-400"}>
-            ① 模式与提示词
+            ① 模式与主播
           </span>
           <span className="text-zinc-300">→</span>
           <span className={step === 2 ? "font-semibold text-black dark:text-zinc-50" : "text-zinc-400"}>
@@ -85,7 +166,7 @@ export default function PodcastWizardPage() {
         </div>
 
         {step === 1 && (
-          <div className="max-w-xl space-y-4">
+          <div className="max-w-2xl space-y-4">
             <div>
               <span className={labelCls}>模式</span>
               <div className="flex gap-2">
@@ -106,65 +187,26 @@ export default function PodcastWizardPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div>
-                <label className={labelCls}>{mode === "dual" ? "主播 A 音色" : "主播音色"}</label>
-                <select value={voiceA} onChange={(e) => setVoiceA(e.target.value)} className={inputCls}>
-                  <option value="">选择音色</option>
-                  {voices.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.name}
-                    </option>
+            <div>
+              <span className={labelCls}>{mode === "dual" ? "主播 A" : "选择主播"}</span>
+              {hosts.length === 0 ? (
+                <p className="text-sm text-zinc-400">暂无可用主播</p>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {hosts.map((h) => (
+                    <HostCard key={h.id} host={h} selected={hostA === h.id} onSelect={() => setHostA(h.id)} />
                   ))}
-                </select>
-              </div>
-              {mode === "dual" && (
-                <div>
-                  <label className={labelCls}>主播 B 音色（需与 A 不同）</label>
-                  <select value={voiceB} onChange={(e) => setVoiceB(e.target.value)} className={inputCls}>
-                    <option value="">选择音色</option>
-                    {voices.map((v) => (
-                      <option key={v.id} value={v.id}>
-                        {v.name}
-                      </option>
-                    ))}
-                  </select>
                 </div>
               )}
             </div>
 
-            {mode === "single" ? (
+            {mode === "dual" && (
               <div>
-                <label className={labelCls}>脚本提示词（怎么写：风格/口吻）</label>
-                <textarea
-                  value={scriptPrompt}
-                  onChange={(e) => setScriptPrompt(e.target.value)}
-                  rows={3}
-                  placeholder="例如：轻松随意的清晨电台风格，语气亲切自然，偶尔开个小玩笑"
-                  className={inputCls}
-                />
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div>
-                  <label className={labelCls}>A 的脚本提示词（人设）</label>
-                  <textarea
-                    value={promptA}
-                    onChange={(e) => setPromptA(e.target.value)}
-                    rows={3}
-                    placeholder="例如：严谨的科技编辑，负责讲解新闻背景和数据"
-                    className={inputCls}
-                  />
-                </div>
-                <div>
-                  <label className={labelCls}>B 的脚本提示词（人设）</label>
-                  <textarea
-                    value={promptB}
-                    onChange={(e) => setPromptB(e.target.value)}
-                    rows={3}
-                    placeholder="例如：活泼的吐槽担当，负责接梗和提问"
-                    className={inputCls}
-                  />
+                <span className={labelCls}>主播 B（需与 A 不同）</span>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {hosts.map((h) => (
+                    <HostCard key={h.id} host={h} selected={hostB === h.id} onSelect={() => setHostB(h.id)} />
+                  ))}
                 </div>
               </div>
             )}

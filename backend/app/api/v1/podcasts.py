@@ -4,9 +4,9 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.api.deps import DB, CurrentUser
 from app.core.redis_client import redis_client
+from app.models.admin_host import AdminHost
 from app.models.podcast import Podcast
-from app.schemas.podcast import PodcastCreate, PodcastCreateOut, PodcastOut, VoiceOut
-from app.services.podcast import voices as voices_svc
+from app.schemas.podcast import PodcastCreate, PodcastCreateOut, PodcastOut
 from app.tasks.podcast import dispatch_podcast_pipeline
 
 router = APIRouter(prefix="/podcasts", tags=["podcasts"])
@@ -15,9 +15,17 @@ HOURLY_LIMIT = 3
 DAILY_LIMIT = 10
 
 
-@router.get("/voices")
-def list_voices(_user: CurrentUser) -> list[VoiceOut]:
-    return [VoiceOut(**v) for v in voices_svc.list_voices()]
+def _get_usable_host(db, host_id: int) -> AdminHost:
+    """可用主播：未删 + 启用 + 预置/复刻成功（与 GET /hosts 暴露口径一致）。"""
+    host = db.get(AdminHost, host_id)
+    if (
+        host is None
+        or host.deleted_at is not None
+        or not host.enabled
+        or host.clone_status not in ("preset", "active")
+    ):
+        raise HTTPException(status_code=422, detail="主播无效或不可用")
+    return host
 
 
 def _check_quota(user_id: int) -> None:
@@ -37,21 +45,20 @@ def _check_quota(user_id: int) -> None:
 @router.post("", status_code=201)
 def create_podcast(body: PodcastCreate, db: DB, user: CurrentUser) -> PodcastCreateOut:
     _check_quota(user.id)
-    if not voices_svc.is_valid_voice(body.voice_a):
-        raise HTTPException(status_code=422, detail="音色 A 无效")
-    if body.voice_b and not voices_svc.is_valid_voice(body.voice_b):
-        raise HTTPException(status_code=422, detail="音色 B 无效")
+    # 主播解析 → 音色/人设快照落库（主播后续编辑不影响本期播客语义）
+    host_a = _get_usable_host(db, body.host_a)
+    host_b = _get_usable_host(db, body.host_b) if body.host_b else None
 
     p = Podcast(
         user_id=user.id,
         mode=body.mode,
         topic_prompt=body.topic_prompt,
         target_minutes=body.target_minutes,
-        voice_a=body.voice_a,
-        voice_b=body.voice_b,
-        script_prompt=body.script_prompt,
-        script_prompt_a=body.script_prompt_a,
-        script_prompt_b=body.script_prompt_b,
+        voice_a=host_a.voice_id,
+        voice_b=host_b.voice_id if host_b else None,
+        script_prompt=host_a.persona if body.mode == "single" else None,
+        script_prompt_a=host_a.persona if body.mode == "dual" else None,
+        script_prompt_b=host_b.persona if body.mode == "dual" else None,
     )
     db.add(p)
     db.commit()
