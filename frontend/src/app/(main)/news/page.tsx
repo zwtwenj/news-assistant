@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 
@@ -27,42 +27,47 @@ const TAGS = ["社会", "国际", "财经", "娱乐", "体育", "科技", "健�
 
 export default function NewsListPage() {
   const [data, setData] = useState<ListResp | null>(null);
-  const [page, setPage] = useState(1);
-  const [keyword, setKeyword] = useState("");
-  const [tag, setTag] = useState("");
-  const [showFailed, setShowFailed] = useState(false); // 勾选：查看质检不通过的新闻
+  const [keyword, setKeyword] = useState(""); // 输入草稿，回车/点搜索才提交到查询
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-
-  const load = useCallback(async (p: number, kw: string, t: string, failed: boolean) => {
-    setLoading(true);
-    setError("");
-    try {
-      const params = new URLSearchParams({
-        page: String(p),
-        page_size: "15",
-        quality: failed ? "bad" : "ok",
-      });
-      if (kw.trim()) params.set("keyword", kw.trim());
-      if (t) params.set("tag", t);
-      setData(await api<ListResp>(`/news/articles?${params}`));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "加载失败");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  // 查询态：仅在用户动作（搜索/切标签/翻页/切拦截区）时整体变更，effect 只依赖它 → 每动作恰好一次请求
+  const [query, setQuery] = useState({ page: 1, kw: "", tag: "", failed: false, seq: 0 });
+  const seqRef = useRef(0); // 响应序号：仅接受最新一次（丢弃过期响应）
 
   useEffect(() => {
-    void load(page, keyword, tag, showFailed);
-  }, [load, page, tag, showFailed]); // eslint-disable-line react-hooks/exhaustive-deps
+    // 定时器 + 清理：StrictMode 双调用时第一个被清掉，挂载也只发一次请求
+    const timer = setTimeout(() => {
+      const seq = ++seqRef.current;
+      setLoading(true);
+      setError("");
+      const params = new URLSearchParams({
+        page: String(query.page),
+        page_size: "15",
+        quality: query.failed ? "bad" : "ok",
+      });
+      if (query.kw.trim()) params.set("keyword", query.kw.trim());
+      if (query.tag) params.set("tag", query.tag);
+      api<ListResp>(`/news/articles?${params}`)
+        .then((d) => {
+          if (seq === seqRef.current) setData(d);
+        })
+        .catch((e) => {
+          if (seq === seqRef.current) setError(e instanceof Error ? e.message : "加载失败");
+        })
+        .finally(() => {
+          if (seq === seqRef.current) setLoading(false);
+        });
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const { page, tag, failed: showFailed } = query;
+  const setQueryPart = (part: Partial<typeof query>) =>
+    setQuery((q) => ({ ...q, page: 1, ...part, seq: q.seq + 1 }));
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.page_size)) : 1;
 
-  const search = () => {
-    setPage(1);
-    void load(1, keyword, tag, showFailed);
-  };
+  const search = () => setQueryPart({ kw: keyword });
 
   return (
     <div className="space-y-4">
@@ -91,10 +96,7 @@ export default function NewsListPage() {
           <input
             type="checkbox"
             checked={showFailed}
-            onChange={(e) => {
-              setShowFailed(e.target.checked);
-              setPage(1);
-            }}
+            onChange={(e) => setQueryPart({ failed: e.target.checked })}
             className="h-4 w-4 accent-foreground"
           />
           查看质检不通过的新闻
@@ -102,10 +104,7 @@ export default function NewsListPage() {
         <div className="flex flex-wrap gap-1.5">
           <button
             type="button"
-            onClick={() => {
-              setTag("");
-              setPage(1);
-            }}
+            onClick={() => setQueryPart({ tag: "" })}
             className={
               !tag
                 ? "rounded-full bg-foreground px-3 py-1 text-xs text-background"
@@ -118,10 +117,7 @@ export default function NewsListPage() {
             <button
               key={t}
               type="button"
-              onClick={() => {
-                setTag(t);
-                setPage(1);
-              }}
+              onClick={() => setQueryPart({ tag: t })}
               className={
                 tag === t
                   ? "rounded-full bg-foreground px-3 py-1 text-xs text-background"
@@ -187,7 +183,7 @@ export default function NewsListPage() {
           <button
             type="button"
             disabled={page <= 1}
-            onClick={() => setPage((p) => p - 1)}
+            onClick={() => setQuery((q) => ({ ...q, page: q.page - 1, seq: q.seq + 1 }))}
             className="rounded-md border border-solid border-black/[.1] px-3 py-1.5 disabled:opacity-40 dark:border-white/[.2]"
           >
             上一页
@@ -198,7 +194,7 @@ export default function NewsListPage() {
           <button
             type="button"
             disabled={page >= totalPages}
-            onClick={() => setPage((p) => p + 1)}
+            onClick={() => setQuery((q) => ({ ...q, page: q.page + 1, seq: q.seq + 1 }))}
             className="rounded-md border border-solid border-black/[.1] px-3 py-1.5 disabled:opacity-40 dark:border-white/[.2]"
           >
             下一页
