@@ -67,14 +67,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [loadUser]);
 
   useEffect(() => {
-    // .then 内应用状态（异步），规避 effect 内同步 setState
-    let alive = true;
-    void loadUser().then((r) => {
-      if (alive) applyResult(r);
-    });
-    return () => {
-      alive = false;
-    };
+    // setTimeout + clearTimeout：StrictMode 双挂载时第一个定时器被清掉，
+    // /users/me 每次进入页面恰好发一次（alive 守卫只防状态应用，防不了请求本身）
+    const timer = setTimeout(() => {
+      void loadUser().then(applyResult);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [loadUser]);
 
   const logout = useCallback(async () => {
