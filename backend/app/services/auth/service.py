@@ -65,12 +65,15 @@ def login_with_code(db: Session, phone: str, code: str) -> TokenPair:
 
     user = db.query(User).filter(User.phone == phone).first()
     if user is None:
-        user = User(phone=phone)
+        user = User(phone=phone, last_login_at=datetime.now(UTC))
         db.add(user)
         db.commit()
         db.refresh(user)
     elif user.status == "banned":
         raise HTTPException(status_code=403, detail="账号已被禁用")
+    else:
+        user.last_login_at = datetime.now(UTC)
+        db.commit()
     return _issue_tokens(db, user)
 
 

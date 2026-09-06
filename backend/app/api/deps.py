@@ -32,6 +32,9 @@ def get_current_user(
     user = db.get(User, int(payload["sub"]))
     if user is None or user.status == "banned":
         raise ApiError(401, ACCOUNT_UNUSABLE, "账号不可用")
+    # 停用/启用都会刷新 disabled_at：早于它签发的 token 一律作废（再启用也需重新登录）
+    if user.disabled_at is not None and payload.get("iat", 0) <= int(user.disabled_at.timestamp()):
+        raise ApiError(401, ACCOUNT_UNUSABLE, "登录已失效，请重新登录")
     return user
 
 

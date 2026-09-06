@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, HTTPException, Request, Response
@@ -75,12 +76,15 @@ def dev_login(body: DevLoginIn, db: DB, response: Response) -> TokenPair:
         raise HTTPException(status_code=404, detail="Not Found")
     user = db.query(User).filter(User.phone == body.phone).first()
     if user is None:
-        user = User(phone=body.phone)
+        user = User(phone=body.phone, last_login_at=datetime.now(UTC))
         db.add(user)
         db.commit()
         db.refresh(user)
     elif user.status == "banned":
         raise HTTPException(status_code=403, detail="账号已被禁用")
+    else:
+        user.last_login_at = datetime.now(UTC)
+        db.commit()
     access, ttl = create_access_token(user.id, ttl_minutes=30 * 24 * 60)  # 30 天
     pair = TokenPair(
         access_token=access,
