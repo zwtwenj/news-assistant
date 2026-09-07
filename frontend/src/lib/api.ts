@@ -73,10 +73,15 @@ async function parseError(resp: Response): Promise<ApiError> {
 }
 
 export async function api<T>(path: string, options?: RequestInit): Promise<T> {
+  // FormData（文件上传）不能设 Content-Type——由浏览器自动生成带 boundary 的 multipart 头
+  const isFormData = typeof FormData !== "undefined" && options?.body instanceof FormData;
+  const baseHeaders = isFormData
+    ? options?.headers
+    : { "Content-Type": "application/json", ...options?.headers };
   const doFetch = () =>
     fetch(`/api/v1${path}`, {
       credentials: "include",
-      headers: { "Content-Type": "application/json", ...options?.headers },
+      headers: baseHeaders,
       ...options,
     });
 
