@@ -27,7 +27,7 @@ export default function LoginPage() {
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { reload } = useAuth();
+  const { user, loading, reload } = useAuth();
 
   const [phone, setPhone] = useState("");
   const [captcha, setCaptcha] = useState<Captcha | null>(null);
@@ -38,6 +38,11 @@ function LoginForm() {
   const [remember, setRemember] = useState(false); // 七天内免登录（7 天档会话）
   const [error, setError] = useState("");
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 已登录用户不该停留在登录页：状态管理器检测到会话直接回首页
+  useEffect(() => {
+    if (!loading && user) router.replace("/");
+  }, [user, loading, router]);
 
   const fetchCaptcha = useCallback(async () => {
     setCaptchaCode("");
@@ -120,6 +125,15 @@ function LoginForm() {
       setGhLoading(false);
     }
   };
+
+  // 加载中或已登录（即将跳转）时不渲染表单
+  if (loading || user) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
+        <Spinner />
+      </main>
+    );
+  }
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-zinc-50 px-4 dark:bg-black">
