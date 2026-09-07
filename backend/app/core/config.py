@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     # 播客检索：标签向量匹配阈值（query 与词表标签的余弦；实测 0.5 恰好切出正确标签域）
     tag_match_threshold: float = 0.5
 
+    # RSS 分发（per-user feed）
+    rss_owner_email: str = ""  # itunes:owner 联系邮箱（平台联系用）
+    rss_public_base: str = "http://localhost:3000"  # feed 对外地址前缀（生产 https://news.icarus-lab.fun）
+    rss_default_cover: str = ""  # 默认频道封面完整 URL（1400x1400+，发布前必须配好）
+
     # 播客合成
     ffmpeg_path: str = "ffmpeg"  # Windows 本地开发填 backend/bin/ffmpeg.exe 绝对路径
     media_dir: str = "media"  # 本地暂存根（相对 backend/），生成中分段/拼接用

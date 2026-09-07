@@ -6,7 +6,7 @@ from app.api.deps import DB, CurrentUser
 from app.core.redis_client import redis_client
 from app.models.admin_host import AdminHost
 from app.models.podcast import Podcast
-from app.schemas.podcast import PodcastCreate, PodcastCreateOut, PodcastOut
+from app.schemas.podcast import PodcastCreate, PodcastCreateOut, PodcastOut, PodcastUpdateIn
 from app.tasks.podcast import dispatch_podcast_pipeline
 
 router = APIRouter(prefix="/podcasts", tags=["podcasts"])
@@ -112,6 +112,23 @@ def list_podcasts(
 @router.get("/{podcast_id}")
 def get_podcast(podcast_id: int, db: DB, user: CurrentUser) -> PodcastOut:
     p = _get_owned(db, user, podcast_id)
+    return PodcastOut.model_validate(p)
+
+
+@router.patch("/{podcast_id}")
+def update_podcast(
+    podcast_id: int, body: PodcastUpdateIn, db: DB, user: CurrentUser
+) -> PodcastOut:
+    """编辑播客展示信息（标题/简介/封面）。已发布进 RSS 的会随 feed 同步更新（guid 不变）。"""
+    p = _get_owned(db, user, podcast_id)
+    if body.title is not None:
+        p.title = body.title.strip()[:200] or None
+    if body.description is not None:
+        p.description = body.description.strip()[:2000] or None
+    if body.cover_url is not None:
+        p.cover_url = body.cover_url.strip()[:500] or None
+    db.commit()
+    db.refresh(p)
     return PodcastOut.model_validate(p)
 
 

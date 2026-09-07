@@ -33,14 +33,29 @@ def public_url(object_key: str) -> str:
     return f"https://{s.oss_bucket}.{host}/{object_key}"
 
 
-def upload_file(local: Path, object_key: str) -> str | None:
+def upload_file(local: Path | str, object_key: str) -> str | None:
     """上传本地文件，成功返回公有读直链，失败返回 None（调用方降级本地）。"""
     try:
-        _bucket().put_object_from_file(object_key, str(local))
+        path = Path(local)
+        _bucket().put_object_from_file(object_key, str(path))
         url = public_url(object_key)
-        logger.info("oss upload ok {} -> {} ({}B)", local.name, object_key, local.stat().st_size)
+        logger.info("oss upload ok {} -> {} ({}B)", path.name, object_key, path.stat().st_size)
         return url
-    except Exception as exc:  # noqa: BLE001  上传失败降级本地，不中断生成链路
+    except Exception as exc:
+        logger.error("oss upload fail {}: {}", object_key, exc)
+        return None
+
+
+def upload_bytes(data: bytes, object_key: str, content_type: str | None = None) -> str | None:
+    """上传内存字节（用户上传的封面图等），成功返回公有读直链，失败返回 None。"""
+    try:
+        headers = {"Content-Type": content_type} if content_type else None
+        _bucket().put_object(object_key, data, headers=headers)
+        url = public_url(object_key)
+        tail = object_key.split("/")[-1]
+        logger.info("oss upload ok {} -> {} ({}B)", tail, object_key, len(data))
+        return url
+    except Exception as exc:
         logger.error("oss upload fail {}: {}", object_key, exc)
         return None
 

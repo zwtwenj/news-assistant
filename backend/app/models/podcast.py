@@ -41,9 +41,17 @@ class Podcast(Base):
     duration_sec: Mapped[int | None] = mapped_column(Integer)
     size_bytes: Mapped[int | None] = mapped_column(Integer)
 
+    # RSS 分发可编辑字段：title NULL 回退 topic_prompt 展示；description 单集简介；
+    # cover_url 单集封面（NULL 用频道默认封面）
+    title: Mapped[str | None] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text)
+    cover_url: Mapped[str | None] = mapped_column(String(500))
+
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # 后管禁用标记：非 NULL 时 C 端不可见（区别于软删 deleted_at，可恢复显示）
     disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 非 NULL = 已进入用户 RSS 公开 feed（平台抓取可见；撤下即置空，平台侧延迟同步）
+    feed_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

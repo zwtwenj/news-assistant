@@ -43,6 +43,10 @@ class PodcastOut(BaseModel):
     mode: str
     status: str
     topic_prompt: str
+    title: str | None = None  # RSS 分发展示标题（NULL 回退 topic_prompt）
+    description: str | None = None
+    cover_url: str | None = None
+    feed_published_at: str | None = None
     target_minutes: int
     voice_a: str
     voice_b: str | None
@@ -54,16 +58,26 @@ class PodcastOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
-    @field_validator("created_at", mode="before")
+    @field_validator("created_at", "feed_published_at", mode="before")
     @classmethod
-    def fmt_created_at(cls, v) -> str:  # noqa: ANN001
+    def fmt_created_at(cls, v) -> str | None:  # noqa: ANN001
+        if v is None:
+            return None
         from zoneinfo import ZoneInfo
 
         if hasattr(v, "astimezone"):
             return v.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
-        return str(v)
+        return str(v) or ""
 
 
 class PodcastCreateOut(BaseModel):
     id: int
     status: str
+
+
+class PodcastUpdateIn(BaseModel):
+    """编辑播客展示信息：全部可选，传了才更新。"""
+
+    title: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    cover_url: str | None = Field(default=None, max_length=500)
