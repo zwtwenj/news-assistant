@@ -35,6 +35,7 @@ function LoginForm() {
   const [smsCode, setSmsCode] = useState("");
   const [countdown, setCountdown] = useState(0);
   const [sending, setSending] = useState(false);
+  const [remember, setRemember] = useState(false); // 七天内免登录（7 天档会话）
   const [error, setError] = useState("");
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -91,7 +92,7 @@ function LoginForm() {
     try {
       await api("/auth/login", {
         method: "POST",
-        body: JSON.stringify({ phone, code: smsCode }),
+        body: JSON.stringify({ phone, code: smsCode, remember }),
       });
       await reload();
       // 登录后回跳原页面（守卫跳转时携带 ?next=）
@@ -102,7 +103,7 @@ function LoginForm() {
     }
   };
 
-  // GitHub OAuth：后端生成授权 URL（state 存 Redis 携带 next），整页跳转
+  // GitHub OAuth：后端生成授权 URL（state 存 Redis 携带 next+remember），整页跳转
   const [ghLoading, setGhLoading] = useState(false);
   const handleGithub = async () => {
     if (ghLoading) return;
@@ -111,7 +112,7 @@ function LoginForm() {
     try {
       const next = searchParams.get("next") ?? "/";
       const { url } = await api<{ url: string }>(
-        `/auth/github/login?next=${encodeURIComponent(next.startsWith("/") ? next : "/")}`
+        `/auth/github/login?next=${encodeURIComponent(next.startsWith("/") ? next : "/")}&remember=${remember}`
       );
       window.location.href = url;
     } catch (e) {
@@ -193,6 +194,16 @@ function LoginForm() {
         >
           登录
         </button>
+
+        <label className="flex cursor-pointer items-center justify-center gap-1.5 text-sm text-zinc-600 dark:text-zinc-400">
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={(e) => setRemember(e.target.checked)}
+            className="h-4 w-4 accent-foreground"
+          />
+          七天内免登录
+        </label>
 
         <div className="flex items-center gap-3 text-xs text-zinc-400">
           <span className="h-px flex-1 bg-black/[.08] dark:bg-white/[.12]" />

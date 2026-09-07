@@ -60,7 +60,7 @@ def send_sms_code(phone: str, captcha_id: str, captcha_code: str, ip: str) -> No
 
 # ---------- 登录/自动注册 ----------
 
-def login_with_code(db: Session, phone: str, code: str) -> TokenPair:
+def login_with_code(db: Session, phone: str, code: str, remember: bool = False) -> TokenPair:
     if not get_sms_provider().verify_code(phone, code):
         raise HTTPException(status_code=401, detail="验证码错误或已过期")
 
@@ -75,7 +75,7 @@ def login_with_code(db: Session, phone: str, code: str) -> TokenPair:
     else:
         user.last_login_at = datetime.now(UTC)
         db.commit()
-    return _issue_tokens(db, user)
+    return _issue_tokens(db, user, remember=remember)
 
 
 def login_with_github(db: Session, gh_id: int, gh_login: str) -> User:
@@ -102,15 +102,25 @@ def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _issue_tokens(db: Session, user: User) -> TokenPair:
+def _issue_tokens(db: Session, user: User, remember: bool = False) -> TokenPair:
+    """签发双 token。同一套逻辑两种时长：勾选「七天内免登录」= 7 天档；
+    不勾 = 24h 档（access 用 jwt_access_ttl_minutes）。rotate 沿用原会话档位。"""
     settings = get_settings()
-    access, ttl = create_access_token(user.id)
+    if remember:
+        access, ttl = create_access_token(
+            user.id, ttl_minutes=settings.remember_access_days * 24 * 60
+        )
+        refresh_days = settings.remember_refresh_days
+    else:
+        access, ttl = create_access_token(user.id)
+        refresh_days = settings.jwt_refresh_ttl_days
     raw_refresh = secrets.token_urlsafe(48)
     db.add(
         RefreshToken(
             user_id=user.id,
             token_hash=_hash_token(raw_refresh),
-            expires_at=datetime.now(UTC) + timedelta(days=settings.jwt_refresh_ttl_days),
+            expires_at=datetime.now(UTC) + timedelta(days=refresh_days),
+            remember=remember,
         )
     )
     db.commit()
@@ -118,6 +128,7 @@ def _issue_tokens(db: Session, user: User) -> TokenPair:
         access_token=access,
         refresh_token=raw_refresh,
         access_expires_in=ttl,
+        refresh_expires_in=refresh_days * 86400,
         user=UserOut.model_validate(user),
     )
 
@@ -148,7 +159,7 @@ def rotate_refresh(db: Session, raw_refresh: str) -> TokenPair:
     user = db.get(User, rt.user_id)
     if user is None or user.status == "banned":
         raise HTTPException(status_code=403, detail="账号不可用")
-    return _issue_tokens(db, user)
+    return _issue_tokens(db, user, remember=rt.remember)
 
 
 def revoke_refresh(db: Session, raw_refresh: str) -> None:

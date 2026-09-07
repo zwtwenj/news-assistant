@@ -26,6 +26,7 @@ class SmsSendIn(BaseModel):
 class LoginIn(BaseModel):
     phone: str
     code: str  # 短信验证码（6位）
+    remember: bool = False  # 勾选「七天内免登录」→ 7 天档会话；否则 24h 档
 
     @field_validator("phone")
     @classmethod
@@ -82,6 +83,7 @@ class TokenPair(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     access_expires_in: int  # 秒
+    refresh_expires_in: int = 0  # 秒（refresh cookie max_age 用；dev-login 无 refresh 为 0）
     user: UserOut
 
 

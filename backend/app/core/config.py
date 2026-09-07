@@ -41,10 +41,12 @@ class Settings(BaseSettings):
     sms_sign_name: str = ""
     sms_template_code: str = ""
 
-    # JWT（认证模块）—— 7 天免登录：access 直接 7 天（停用/启用靠 disabled_at 踢旧 token）；
-    # refresh 7 天滑动（rotate 从当前时间重算，活跃即续期）
-    jwt_access_ttl_minutes: int = 7 * 24 * 60  # access token 有效期 7d
-    jwt_refresh_ttl_days: int = 7  # refresh token 滑动有效期 7d（轮换）
+    # JWT（认证模块）—— 双会话档位：勾选「七天内免登录」用 remember 档，否则普通档
+    # （普通档 cookie 为会话级，关浏览器即失效；停用/启用靠 disabled_at 踢旧 token）
+    jwt_access_ttl_minutes: int = 120  # 普通会话 access 2h
+    jwt_refresh_ttl_days: int = 1  # 普通会话 refresh 1d
+    remember_access_days: int = 7  # 免登录会话 access 7d
+    remember_refresh_days: int = 7  # 免登录会话 refresh 7d（滑动）
     # Cookie Secure 标记：仅 HTTPS 部署置 true（明文 http 下浏览器拒存 Secure Cookie，登录态会丢失）
     cookie_secure: bool = False
 

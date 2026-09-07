@@ -1,5 +1,6 @@
 """GitHub OAuth 授权码流程：state 防护 + code 换 token + 拉取用户。"""
 
+import json
 import secrets
 from urllib.parse import quote
 
@@ -23,13 +24,14 @@ def configured() -> bool:
     return bool(s.github_client_id and s.github_client_secret and s.github_redirect_uri)
 
 
-def build_login_url(next_path: str | None) -> tuple[str, str]:
-    """生成授权 URL（state 一次性存 Redis，value 携带 next）。返回 (url, state)。"""
+def build_login_url(next_path: str | None, remember: bool = False) -> tuple[str, str]:
+    """生成授权 URL（state 一次性存 Redis，value 为 {next, remember}）。返回 (url, state)。"""
     from app.core.config import get_settings
 
     s = get_settings()
     state = secrets.token_urlsafe(24)
-    redis_client.setex(_STATE_KEY.format(state), _STATE_TTL, next_path or "/")
+    payload = json.dumps({"next": next_path or "/", "remember": remember})
+    redis_client.setex(_STATE_KEY.format(state), _STATE_TTL, payload)
     url = (
         f"{_AUTHORIZE}?client_id={s.github_client_id}"
         f"&redirect_uri={quote(s.github_redirect_uri, safe='')}"
@@ -38,13 +40,13 @@ def build_login_url(next_path: str | None) -> tuple[str, str]:
     return url, state
 
 
-def consume_state(state: str) -> str | None:
-    """校验并消费 state（一次性），返回其携带的 next 路径；非法返回 None。"""
+def consume_state(state: str) -> dict | None:
+    """校验并消费 state（一次性），返回 {"next": ..., "remember": ...}；非法返回 None。"""
     val = redis_client.get(_STATE_KEY.format(state))
     if val is None:
         return None
     redis_client.delete(_STATE_KEY.format(state))
-    return str(val)
+    return json.loads(val)
 
 
 def exchange_token(code: str) -> str:
