@@ -77,6 +77,24 @@ def login_with_code(db: Session, phone: str, code: str) -> TokenPair:
     return _issue_tokens(db, user)
 
 
+def login_with_github(db: Session, gh_id: int, gh_login: str) -> User:
+    """GitHub OAuth 登录：按 github_id 查/建号（无手机号），刷新展示名与最近登录。"""
+    user = db.query(User).filter(User.github_id == gh_id).first()
+    if user is None:
+        user = User(github_id=gh_id, github_login=gh_login, last_login_at=datetime.now(UTC))
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    elif user.status == "banned":
+        raise HTTPException(status_code=403, detail="账号已被禁用")
+    else:
+        if user.github_login != gh_login:  # GitHub 用户名可能改名
+            user.github_login = gh_login
+        user.last_login_at = datetime.now(UTC)
+        db.commit()
+    return user
+
+
 # ---------- refresh token：签发 / 轮换 / 吊销 ----------
 
 def _hash_token(raw: str) -> str:

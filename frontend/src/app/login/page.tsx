@@ -1,15 +1,32 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 
+import GithubIcon from "@/components/GithubIcon";
+import Spinner from "@/components/Spinner";
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/providers/auth";
 
 type Captcha = { captcha_id: string; image_base64: string };
 
 export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
+          <Spinner />
+        </main>
+      }
+    >
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { reload } = useAuth();
 
   const [phone, setPhone] = useState("");
@@ -78,10 +95,28 @@ export default function LoginPage() {
       });
       await reload();
       // 登录后回跳原页面（守卫跳转时携带 ?next=）
-      const next = new URLSearchParams(window.location.search).get("next");
+      const next = searchParams.get("next");
       router.push(next && next.startsWith("/") ? next : "/");
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "登录失败，请重试");
+    }
+  };
+
+  // GitHub OAuth：后端生成授权 URL（state 存 Redis 携带 next），整页跳转
+  const [ghLoading, setGhLoading] = useState(false);
+  const handleGithub = async () => {
+    if (ghLoading) return;
+    setGhLoading(true);
+    setError("");
+    try {
+      const next = searchParams.get("next") ?? "/";
+      const { url } = await api<{ url: string }>(
+        `/auth/github/login?next=${encodeURIComponent(next.startsWith("/") ? next : "/")}`
+      );
+      window.location.href = url;
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "GitHub 登录暂不可用");
+      setGhLoading(false);
     }
   };
 
@@ -157,6 +192,25 @@ export default function LoginPage() {
           className="w-full rounded-md bg-foreground py-2.5 font-medium text-background disabled:opacity-40"
         >
           登录
+        </button>
+
+        <div className="flex items-center gap-3 text-xs text-zinc-400">
+          <span className="h-px flex-1 bg-black/[.08] dark:bg-white/[.12]" />
+          或
+          <span className="h-px flex-1 bg-black/[.08] dark:bg-white/[.12]" />
+        </div>
+        <button
+          type="button"
+          disabled={ghLoading}
+          onClick={() => void handleGithub()}
+          className="flex w-full items-center justify-center gap-2 rounded-md border border-solid border-black/[.1] py-2.5 text-sm font-medium text-black hover:border-black/40 disabled:opacity-40 dark:border-white/[.2] dark:text-zinc-50 dark:hover:border-white/40"
+        >
+          {ghLoading ? (
+            <Spinner className="size-4 border-zinc-300 border-t-zinc-500" />
+          ) : (
+            <GithubIcon className="size-4" />
+          )}
+          使用 GitHub 登录
         </button>
       </div>
     </main>

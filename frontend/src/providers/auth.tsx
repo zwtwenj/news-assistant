@@ -8,7 +8,8 @@ import { isProtectedPath } from "@/lib/auth-guard";
 
 export type User = {
   id: number;
-  phone: string;
+  phone: string | null; // GitHub 登录用户无手机号
+  github_login: string | null;
   status: string;
   created_at: string;
 };

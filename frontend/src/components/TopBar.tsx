@@ -30,7 +30,9 @@ export default function TopBar() {
                 href="/account"
                 className="text-muted-foreground transition-colors hover:text-foreground"
               >
-                {user.phone.slice(0, 3)}****{user.phone.slice(-4)}
+                {user.phone
+                  ? `${user.phone.slice(0, 3)}****${user.phone.slice(-4)}`
+                  : `@${user.github_login}`}
               </Link>
               <Button variant="outline" size="sm" onClick={() => void handleLogout()}>
                 <LogOut />

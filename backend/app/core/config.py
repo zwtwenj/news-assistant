@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     cors_origins: list[str] = ["http://localhost:3000"]
 
+    # GitHub OAuth 登录（留空 = 功能关闭，/auth/github/login 返回未配置）
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    github_redirect_uri: str = ""  # 需与 OAuth App 注册的回调完全一致，如 https://host/login/github
+
     # 基础设施
     database_url: str = "postgresql+psycopg://news:news@localhost:5432/news"
     redis_url: str = "redis://localhost:6379/0"

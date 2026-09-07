@@ -5,17 +5,21 @@ from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 
 from app.api.deps import ACCESS_COOKIE, DB, REFRESH_COOKIE
 from app.core.config import get_settings
-from app.core.errcode import REFRESH_INVALID, ApiError
+from app.core.errcode import REFRESH_INVALID, VALIDATION, ApiError
 from app.models.user import User
 from app.schemas.auth import (
     CaptchaOut,
     DevLoginIn,
+    GithubCallbackIn,
+    GithubCallbackPair,
+    GithubLoginOut,
     LoginIn,
     RefreshIn,
     SmsSendIn,
     TokenPair,
     UserOut,
 )
+from app.services.auth import github as github_svc
 from app.services.auth import service as auth_svc
 from app.services.auth.jwt import create_access_token
 
@@ -102,6 +106,31 @@ def dev_login(body: DevLoginIn, db: DB, response: Response) -> TokenPair:
     )
     _set_auth_cookies(response, pair)
     return pair
+
+
+@router.get("/github/login", include_in_schema=False)
+def github_login(next_path: str = "/") -> GithubLoginOut:
+    """返回 GitHub 授权页 URL（state 存 Redis 携带 next；未配置凭据时给校验错误码）。"""
+    if not github_svc.configured():
+        raise ApiError(400, VALIDATION, "GitHub 登录未配置")
+    if not next_path.startswith("/"):  # 防开放跳转
+        next_path = "/"
+    url, _ = github_svc.build_login_url(next_path)
+    return GithubLoginOut(url=url)
+
+
+@router.post("/github/callback", include_in_schema=False)
+def github_callback(body: GithubCallbackIn, db: DB, response: Response) -> GithubCallbackPair:
+    """GitHub 授权回调：校验 state → code 换 token → 拉用户 → 建号/登录 → 签发本站双 token。"""
+    next_path = github_svc.consume_state(body.state)
+    if next_path is None:
+        raise HTTPException(status_code=401, detail="授权状态已过期，请重新登录")
+    token = github_svc.exchange_token(body.code)
+    gh_user = github_svc.get_github_user(token)
+    user = auth_svc.login_with_github(db, int(gh_user["id"]), str(gh_user["login"]))
+    pair = auth_svc._issue_tokens(db, user)
+    _set_auth_cookies(response, pair)
+    return GithubCallbackPair(**pair.model_dump(), next=next_path)
 
 
 @router.post("/refresh")

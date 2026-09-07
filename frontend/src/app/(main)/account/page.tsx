@@ -23,9 +23,15 @@ export default function AccountPage() {
             <div className="flex justify-between">
               <dt className="text-zinc-500">手机号</dt>
               <dd className="text-black dark:text-zinc-50">
-                {user.phone.slice(0, 3)}****{user.phone.slice(-4)}
+                {user.phone ? `${user.phone.slice(0, 3)}****${user.phone.slice(-4)}` : "未绑定"}
               </dd>
             </div>
+            {user.github_login && (
+              <div className="flex justify-between">
+                <dt className="text-zinc-500">GitHub</dt>
+                <dd className="text-black dark:text-zinc-50">@{user.github_login}</dd>
+              </div>
+            )}
             <div className="flex justify-between">
               <dt className="text-zinc-500">状态</dt>
               <dd className="text-black dark:text-zinc-50">{user.status}</dd>

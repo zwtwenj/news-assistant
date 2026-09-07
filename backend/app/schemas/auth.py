@@ -62,7 +62,8 @@ class DevLoginIn(BaseModel):
 
 class UserOut(BaseModel):
     id: int
-    phone: str
+    phone: str | None  # GitHub 登录用户无手机号
+    github_login: str | None = None  # GitHub 用户名（phone 为空时的展示名）
     status: str
     created_at: str
 
@@ -82,3 +83,18 @@ class TokenPair(BaseModel):
     token_type: str = "bearer"
     access_expires_in: int  # 秒
     user: UserOut
+
+
+class GithubLoginOut(BaseModel):
+    url: str  # GitHub 授权页地址（含 state）
+
+
+class GithubCallbackIn(BaseModel):
+    code: str
+    state: str
+
+
+class GithubCallbackPair(TokenPair):
+    """GitHub 回调响应：在 TokenPair 基础上携带授权前的目标页。"""
+
+    next: str = "/"
