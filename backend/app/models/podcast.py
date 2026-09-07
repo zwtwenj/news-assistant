@@ -35,11 +35,15 @@ class Podcast(Base):
     script: Mapped[list | None] = mapped_column(JSONB)  # [{speaker, text}]
     # 素材命中清单 [{article_id,title,tags,rerank_score}]：本期引用了哪些新闻（可追溯）
     materials: Mapped[list | None] = mapped_column(JSONB)
+    # query 重写产物 {tags, rag_query, template{opening,ending}, via}：多节点拆分 JSON，后管可调试
+    query_rewrite: Mapped[dict | None] = mapped_column(JSONB)
     audio_url: Mapped[str | None] = mapped_column(String(300))
     duration_sec: Mapped[int | None] = mapped_column(Integer)
     size_bytes: Mapped[int | None] = mapped_column(Integer)
 
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 后管禁用标记：非 NULL 时 C 端不可见（区别于软删 deleted_at，可恢复显示）
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

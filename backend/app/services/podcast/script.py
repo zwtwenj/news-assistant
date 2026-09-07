@@ -20,7 +20,7 @@ from app.models.article import Article
 from app.services.llm.gateway import gateway
 from app.services.news import vector as vector_svc
 from app.services.podcast import voices as voices_svc
-from app.services.podcast.query_understanding import understand_topic
+from app.services.podcast.query_understanding import TopicIntent, understand_topic
 
 # 脚本生成用中档模型（flash 级写新闻信息组织偏弱）；打标仍用 deepseek-v4-flash
 SCRIPT_PROVIDER = "dashscope"
@@ -125,13 +125,13 @@ def _plan(target_minutes: int) -> dict[str, Any]:
 # 话题→标签映射已迁移至 query_understanding.py（两层 query 理解）
 
 
-def _search_materials(topic: str, top_k: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _search_materials(topic: str, top_k: int) -> tuple[list[dict[str, Any]], TopicIntent]:
     """检索素材（三段式）：query 理解 → 多路召回 → rerank 精排。
 
-    ① understand_topic：规则抽 tags（"国际新闻"→[国际]）+ 清洗任务词；未命中走 LLM 兜底
+    ① understand_topic：抽 tags + rag_query + template（开场白/结束语模板）
     ② 召回：tags 过滤的向量检索 top_k×3（无命中降级纯语义），阈值过滤
     ③ gte-rerank-v2 精排：精排分降序为主（语义相关优先），新鲜度作次级排序
-    返回 (命中列表 ≤ top_k+2 备选, 意图摘要)；0 命中由调用方拒绝。
+    返回 (命中列表 ≤ top_k+2 备选, 完整 TopicIntent)；0 命中由调用方拒绝。
     """
     intent = understand_topic(topic)
     week_ago = int(time.time()) - SEARCH_DAYS * 86400
@@ -148,18 +148,14 @@ def _search_materials(topic: str, top_k: int) -> tuple[list[dict[str, Any]], dic
         logger.info("话题类别 {} 无命中，降级纯语义检索", intent.tags)
         candidates = _recall(None)
     if not candidates:
-        return [], {"tags": intent.tags, "query": intent.query, "via": intent.via}
+        return [], intent
 
     reranked = vector_svc.rerank(intent.query, candidates)
     # 精排分为主、新鲜度为辅（相关优先，7 天窗口已保证时效下限）
     reranked.sort(
         key=lambda h: (h.get("rerank_score") or 0, h["publish_ts"]), reverse=True
     )
-    intent_summary = {
-        "tags": intent.tags, "query": intent.query, "via": intent.via,
-        "recalled": len(candidates),
-    }
-    return reranked[: top_k + 2], intent_summary
+    return reranked[: top_k + 2], intent
 
 
 def _load_material_text(hits: list[dict[str, Any]], top_k: int) -> str:
@@ -209,6 +205,23 @@ def _load_material_text(hits: list[dict[str, Any]], top_k: int) -> str:
     return "\n".join(blocks)
 
 
+def _template_block(template: dict | None) -> str:
+    """模板句 → 脚本硬约束块（query 重写 template 节点：开场白/结束语逐字使用）。"""
+    if not template:
+        return ""
+    lines = []
+    if template.get("opening"):
+        lines.append(
+            f"【开场白（硬约束）】全篇第一句话必须逐字使用：「{template['opening']}」，"
+            "不得改写、翻译或合并到其他句子。"
+        )
+    if template.get("ending"):
+        lines.append(
+            f"【结束语（硬约束）】全篇必须以这句话收尾，逐字使用：「{template['ending']}」"
+        )
+    return "\n".join(lines) + "\n\n" if lines else ""
+
+
 def generate_script(
     mode: str,
     topic_prompt: str,
@@ -225,6 +238,7 @@ def generate_script(
     hits, intent = _search_materials(topic_prompt, plan["top_k"])
     if not hits:
         raise ScriptError("素材不足，无法为你生成播客：近期新闻库中没有与话题相关的内容")
+    template_block = _template_block(intent.template)
 
     materials = _load_material_text(hits, plan["top_k"])
     # 素材命中清单（结构化，落库 + Langfuse，回答"这期引用了哪些新闻"）
@@ -244,7 +258,7 @@ def generate_script(
         "materials": materials,
     }
     if mode == "single":
-        prompt = SINGLE_PROMPT.format(
+        prompt = template_block + SINGLE_PROMPT.format(
             script_prompt=script_prompt,
             words_min=plan["words"][0],
             words_max=plan["words"][1],
@@ -253,7 +267,7 @@ def generate_script(
             **common,
         )
     else:
-        prompt = DUAL_PROMPT.format(
+        prompt = template_block + DUAL_PROMPT.format(
             script_prompt_a=script_prompt_a,
             script_prompt_b=script_prompt_b,
             turns_min=plan["turns"][0],
@@ -277,7 +291,7 @@ def generate_script(
                     "podcast": True, "mode": mode,
                     "topic": topic_prompt[:50], "target_minutes": target_minutes,
                     "attempt": attempt,
-                    "intent": intent, "materials_detail": materials_detail,
+                    "intent": intent.to_dict(), "materials_detail": materials_detail,
                 },
             )
             raw = (resp.choices[0].message.content or "").strip()
@@ -297,7 +311,8 @@ def generate_script(
                 logger.warning("script still short after retry: {}/{}", total_chars, words_min)
             logger.info("script ok: {} 段 {} 字（目标 {}~{}）", len(segments), total_chars,
                         words_min, words_max)
-            return {"segments": segments, "materials": materials_detail, "intent": intent}
+            return {"segments": segments, "materials": materials_detail,
+                    "intent": intent.to_dict()}
         except Exception as exc:  # noqa: BLE001
             last_err = exc
             logger.warning("script attempt fail: {}: {}", exc.__class__.__name__, str(exc)[:80])

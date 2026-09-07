@@ -69,7 +69,8 @@ def create_podcast(body: PodcastCreate, db: DB, user: CurrentUser) -> PodcastCre
 
 def _get_owned(db, user: CurrentUser, podcast_id: int) -> Podcast:
     p = db.get(Podcast, podcast_id)
-    if p is None or p.deleted_at is not None:
+    # disabled_at 非空 = 后管已禁用，C 端视为不存在（管理员下线可恢复）
+    if p is None or p.deleted_at is not None or p.disabled_at is not None:
         raise HTTPException(status_code=404, detail="播客不存在")
     if p.user_id != user.id:
         raise HTTPException(status_code=403, detail="无权访问")
@@ -84,7 +85,9 @@ def list_podcasts(
     page_size: int = Query(10, ge=1, le=50),
 ) -> dict:
     q = db.query(Podcast).filter(
-        Podcast.user_id == user.id, Podcast.deleted_at.is_(None)
+        Podcast.user_id == user.id,
+        Podcast.deleted_at.is_(None),
+        Podcast.disabled_at.is_(None),  # 后管禁用的不下发
     )
     total = q.count()
     rows = (
