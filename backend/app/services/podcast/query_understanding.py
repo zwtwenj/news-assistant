@@ -33,13 +33,15 @@ TOPIC_TAG_MAP = {
 TASK_WORDS = ("生成", "制作", "帮我", "给我", "一份", "一期", "一段", "最近", "最新",
               "播客", "节目", "音频", "电台", "新闻", "资讯", "聊聊", "谈谈", "关于")
 
-LLM_PROMPT = """用户想生成一期新闻播客，给出话题描述。请做两件事：
-1. 把话题改写成适合新闻检索的语义 query（rag_query）：去掉"生成/一份/播客"等
+LLM_PROMPT = """用户想生成一期新闻播客，给出话题描述。请做三件事：
+1. 起一个播客标题（title）：8~20 字，概括核心主题，吸引人但不夸张，
+   不含"生成/一期/播客"等任务词，不含开场白结束语；
+2. 把话题改写成适合新闻检索的语义 query（rag_query）：去掉"生成/一份/播客"等
    任务性词汇和开场白/结束语要求，围绕核心主题补充同义关键词（如天气话题可补充
    "降雨 台风 气象预警 天气预报"），输出 10~30 字；
-2. 若话题明确要求了开场白/结束语话术，提取到 template；没有就输出 null。
+3. 若话题明确要求了开场白/结束语话术，提取到 template；没有就输出 null。
 
-只输出 JSON：{{"rag_query": "...",
+只输出 JSON：{{"title": "...", "rag_query": "...",
  "template": {{"opening": "开场白原文", "ending": "结束语原文"}} 或 null}}
 
 话题：{topic}"""
@@ -61,7 +63,7 @@ _CLOSE_RE = re.compile(
 
 
 class TopicIntent:
-    __slots__ = ("tags", "query", "template", "via")
+    __slots__ = ("tags", "query", "template", "via", "title")
 
     def __init__(
         self,
@@ -69,10 +71,12 @@ class TopicIntent:
         query: str,
         via: str,
         template: dict | None = None,
+        title: str | None = None,
     ):
-        self.tags = tags  # 白名单标签子集（可为空 = 不过滤）
+        self.tags = tags  # 词表标签子集（可为空 = 不过滤）
         self.query = query  # 清洗后的检索 query（rag_query）
         self.template = template  # {"opening": ..., "ending": ...}（可只含其一）
+        self.title = title  # LLM/规则生成的播客标题（用户可后续编辑覆盖）
         self.via = via  # rule / llm / raw
 
     def to_dict(self) -> dict:
@@ -81,6 +85,7 @@ class TopicIntent:
             "tags": self.tags,
             "rag_query": self.query,
             "template": self.template,
+            "title": self.title,
             "via": self.via,
         }
 
@@ -126,9 +131,10 @@ def understand_topic(topic: str) -> TopicIntent:
     vocabulary = get_vocabulary()
     vocab_set = set(vocabulary)
 
-    # 1) rag_query：规则清洗 → LLM 兜底扩写（失败回退原话题）
+    # 1) rag_query + 标题：规则清洗 → LLM 兜底扩写（失败回退原话题）
     via = "rule"
     query = _strip_task_words(residual)
+    title = query or None  # 规则路径标题 = 清洗后话题词；LLM 路径用生成的
     if not query or query == topic:  # 规则清洗无增益，走 LLM 扩写
         try:
             resp = gateway.chat(
@@ -145,9 +151,12 @@ def understand_topic(topic: str) -> TopicIntent:
 
             data = json.loads((resp.choices[0].message.content or "").strip() or "{}")
             llm_query = str(data.get("rag_query") or "").strip()[:60]
+            llm_title = str(data.get("title") or "").strip()[:50]
             if llm_query:
                 query = llm_query
                 via = "llm"
+            if llm_title:
+                title = llm_title
             llm_template = data.get("template") if isinstance(data.get("template"), dict) else None
             merged = {**(llm_template or {}), **(template or {})}  # 正则命中优先（逐字原文更可靠）
             template = merged or None
@@ -156,8 +165,10 @@ def understand_topic(topic: str) -> TopicIntent:
 
     # 2) 标签：规则命中 + 词表向量匹配（阈值量化，替代 LLM 挑选），合并去重
     tags = [tag for kw, tag in TOPIC_TAG_MAP.items() if kw in residual]
-    tags = [t for t in tags if t in vocab_set]
+    tags = [t for t in dict.fromkeys(t for t in tags if t in vocab_set)]
     for t in match_tags(query):
         if t not in tags:
             tags.append(t)
-    return TopicIntent(tags=tags[:3], query=query or topic, via=via, template=template)
+    return TopicIntent(
+        tags=tags[:3], query=query or topic, via=via, template=template, title=title
+    )

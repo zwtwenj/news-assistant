@@ -59,6 +59,8 @@ def gen_script(self, podcast_id: int) -> str:
         p.script = result["segments"]
         p.materials = result["materials"]  # 本期引用的新闻清单（可追溯）
         p.query_rewrite = result["intent"]  # 重写 JSON：tags/rag_query/template/via（后管可调试）
+        if result["intent"].get("title"):
+            p.title = result["intent"]["title"]  # LLM 生成的播客标题（用户可在编辑弹窗覆盖）
         p.error = None
         # TTS 关闭模式（调试脚本用）：脚本完成即成功，不做语音合成
         p.status = "succeeded" if not get_settings().podcast_tts_enabled else "synthesizing"
