@@ -56,23 +56,29 @@ def test_rebuild_from_articles(clean_words):
     db.refresh(a)
     db.close()
 
-    vocab_svc.rebuild_vocabulary()
-    assert "自愈测试词" in vocab_svc.get_vocabulary()
-
-    # 清理文章 + 再 rebuild：并集语义不删词，测试词手动清除
-    db = SessionLocal()
-    db.delete(a)
-    db.commit()
-    db.close()
-    vocab_svc.rebuild_vocabulary()
-    db = SessionLocal()
-    db.query(TagWord).filter(TagWord.word == "自愈测试词").delete()
-    db.commit()
-    db.close()
     try:
-        from app.core.redis_client import redis_client
+        vocab_svc.rebuild_vocabulary()
+        assert "自愈测试词" in vocab_svc.get_vocabulary()
 
-        redis_client.delete("news:tag_vocab")
-    except Exception:  # noqa: BLE001
-        pass
-    assert "自愈测试词" not in vocab_svc.get_vocabulary()
+        # 并集语义不删词，测试词手动清除
+        db = SessionLocal()
+        db.delete(a)
+        db.commit()
+        vocab_svc.rebuild_vocabulary()
+        db.query(TagWord).filter(TagWord.word == "自愈测试词").delete()
+        db.commit()
+        db.close()
+        try:
+            from app.core.redis_client import redis_client
+
+            redis_client.delete("news:tag_vocab")
+        except Exception:  # noqa: BLE001
+            pass
+        assert "自愈测试词" not in vocab_svc.get_vocabulary()
+    except Exception:
+        # 断言失败也要清掉测试文章（避免残留成"处理中"脏数据）
+        db = SessionLocal()
+        db.query(Article).filter(Article.id == a.id).delete()
+        db.commit()
+        db.close()
+        raise
