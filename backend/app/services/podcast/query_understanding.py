@@ -33,15 +33,13 @@ TOPIC_TAG_MAP = {
 TASK_WORDS = ("生成", "制作", "帮我", "给我", "一份", "一期", "一段", "最近", "最新",
               "播客", "节目", "音频", "电台", "新闻", "资讯", "聊聊", "谈谈", "关于")
 
-LLM_PROMPT = """用户想生成一期新闻播客，给出话题描述。请做三件事：
-1. 从标签词表中挑选 1~3 个与话题最相关的标签（词表里没有相关的就给空数组，不要硬选）：
-   {vocabulary}
-2. 把话题改写成适合新闻检索的语义 query（rag_query）：去掉"生成/一份/播客"等
+LLM_PROMPT = """用户想生成一期新闻播客，给出话题描述。请做两件事：
+1. 把话题改写成适合新闻检索的语义 query（rag_query）：去掉"生成/一份/播客"等
    任务性词汇和开场白/结束语要求，围绕核心主题补充同义关键词（如天气话题可补充
    "降雨 台风 气象预警 天气预报"），输出 10~30 字；
-3. 若话题明确要求了开场白/结束语话术，提取到 template；没有就输出 null。
+2. 若话题明确要求了开场白/结束语话术，提取到 template；没有就输出 null。
 
-只输出 JSON：{{"tags": ["..."], "rag_query": "...",
+只输出 JSON：{{"rag_query": "...",
  "template": {{"opening": "开场白原文", "ending": "结束语原文"}} 或 null}}
 
 话题：{topic}"""
@@ -92,7 +90,8 @@ def _strip_task_words(topic: str) -> str:
     for w in TASK_WORDS:
         text = text.replace(w, "")
     # 去掉残留标点/空白/首尾助词，若仍有内容则用之，否则回退原话题
-    cleaned = text.strip("，。！？、 \t").strip("了的 ")
+    cleaned = text.replace("，", " ").replace("、", " ").strip("，。！？、；; \t").strip("了的 ")
+    cleaned = " ".join(cleaned.split())
     return cleaned if len(cleaned) >= 2 else topic
 
 
@@ -115,51 +114,50 @@ def extract_template(topic: str) -> tuple[dict | None, str]:
 
 
 def understand_topic(topic: str) -> TopicIntent:
-    """规则快路径 → LLM 兜底 → 原样兜底（永不抛错）。template 抽取两条路径共用正则。"""
-    from app.services.news.vocabulary import get_vocabulary
+    """模板抽取 + rag_query 生成（规则/LLM）→ 标签由向量匹配产出（LLM 不再挑标签）。
 
-    # 0) 模板句抽取（正则，两条路径共用；残余文本不再进检索 query）
+    tags 来源：① 规则快路径 TOPIC_TAG_MAP（直白话题零成本）② 词表向量匹配
+    （query 与标签词余弦 ≥ 阈值，语义泛化的确定性量化）。两者合并去重。
+    """
+    from app.services.news.vocabulary import get_vocabulary, match_tags
+
+    # 0) 模板句抽取（正则，残余文本不再进检索 query）
     template, residual = extract_template(topic)
     vocabulary = get_vocabulary()
     vocab_set = set(vocabulary)
 
-    # 1) 规则：关键词抽标签（优先残余文本，无命中回退原话题） + 任务词清洗
-    tags = [tag for kw, tag in TOPIC_TAG_MAP.items() if kw in residual] or [
-        tag for kw, tag in TOPIC_TAG_MAP.items() if kw in topic
-    ]
-    # 词表收窄：规则映射出的标签必须仍在词表中（旧分类 seed 已入词表，动态删除的标签不再误用）
-    tags = [t for t in tags if t in vocab_set] if vocab_set else tags
+    # 1) rag_query：规则清洗 → LLM 兜底扩写（失败回退原话题）
+    via = "rule"
     query = _strip_task_words(residual)
-    if tags:
-        return TopicIntent(tags=tags, query=query or topic, via="rule", template=template)
+    if not query or query == topic:  # 规则清洗无增益，走 LLM 扩写
+        try:
+            resp = gateway.chat(
+                "zhipu",
+                messages=[
+                    {"role": "user", "content": LLM_PROMPT.format(topic=topic)}
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=300,
+                temperature=0.0,
+                langfuse_meta={"query_understanding": True, "topic": topic[:50]},
+            )
+            import json
 
-    # 2) LLM 兜底：口语化/隐含类别表达（正则未抽到模板时让 LLM 一并尝试）
-    try:
-        resp = gateway.chat(
-            "zhipu",
-            messages=[
-                {"role": "user", "content": LLM_PROMPT.format(
-                    vocabulary="、".join(vocabulary), topic=topic)}
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=300,
-            temperature=0.0,
-            langfuse_meta={"query_understanding": True, "topic": topic[:50]},
-        )
-        import json
-
-        data = json.loads((resp.choices[0].message.content or "").strip() or "{}")
-        llm_tags = [t for t in data.get("tags", []) if t in vocab_set][:3]
-        llm_query = str(data.get("rag_query") or data.get("query", "")).strip()[:60]
-        if llm_tags or llm_query:
+            data = json.loads((resp.choices[0].message.content or "").strip() or "{}")
+            llm_query = str(data.get("rag_query") or "").strip()[:60]
+            if llm_query:
+                query = llm_query
+                via = "llm"
             llm_template = data.get("template") if isinstance(data.get("template"), dict) else None
             merged = {**(llm_template or {}), **(template or {})}  # 正则命中优先（逐字原文更可靠）
-            return TopicIntent(
-                tags=llm_tags, query=llm_query or query or topic, via="llm",
-                template=merged or None,
-            )
-    except Exception as exc:  # noqa: BLE001  兜底路径失败不影响主流程
-        logger.opt(exception=True).warning("query understanding fail: {}", str(exc)[:60])
+            template = merged or None
+        except Exception as exc:  # noqa: BLE001  兜底路径失败不影响主流程
+            logger.opt(exception=True).warning("query understanding fail: {}", str(exc)[:60])
 
-    # 3) 原样兜底
-    return TopicIntent(tags=[], query=topic, via="raw", template=template)
+    # 2) 标签：规则命中 + 词表向量匹配（阈值量化，替代 LLM 挑选），合并去重
+    tags = [tag for kw, tag in TOPIC_TAG_MAP.items() if kw in residual]
+    tags = [t for t in tags if t in vocab_set]
+    for t in match_tags(query):
+        if t not in tags:
+            tags.append(t)
+    return TopicIntent(tags=tags[:3], query=query or topic, via=via, template=template)

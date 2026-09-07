@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     milvus_uri: str = ""
     milvus_token: str = ""
 
+    # 播客检索：标签向量匹配阈值（query 与词表标签的余弦；实测 0.5 恰好切出正确标签域）
+    tag_match_threshold: float = 0.5
+
     # 播客合成
     ffmpeg_path: str = "ffmpeg"  # Windows 本地开发填 backend/bin/ffmpeg.exe 绝对路径
     media_dir: str = "media"  # 本地暂存根（相对 backend/），生成中分段/拼接用

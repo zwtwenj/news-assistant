@@ -22,8 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.db.session import SessionLocal
 from app.models.article import Article
 from app.services.news import analyzer as analyzer_svc
-from app.services.news import vocabulary as vocab_svc
 from app.services.news import vector as vector_svc
+from app.services.news import vocabulary as vocab_svc
 
 
 def main(limit: int, refresh_vector: bool) -> None:
@@ -83,9 +83,12 @@ def main(limit: int, refresh_vector: bool) -> None:
             logger.info("Milvus 向量已刷新 {} 条", n)
 
         grew = sorted(set(grown_words))
+        after = vocab_svc.get_vocabulary()
         logger.info("=" * 60)
         logger.info("完成：成功 {} / 失败 {} / 标签变化 {} 篇", ok, fail, changed)
-        logger.info("词表生长：{} → {} 词，新生长 {} 个：{}", len(before), len(vocab_svc.get_vocabulary()), len(grew), grew)
+        logger.info(
+            "词表生长：{} → {} 词，新生长 {} 个：{}", len(before), len(after), len(grew), grew
+        )
         logger.info("重打后标签分布 Top15：{}", tag_counter.most_common(15))
     finally:
         db.close()

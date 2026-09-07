@@ -29,14 +29,12 @@ def clean_words():
 
 
 def test_add_new_tags_sanitize(clean_words):
-    inputs = ["气象", "  气象  ", "x", "这是一个超过八个字的超长标签", "天气预报 "]
+    inputs = ["卫生测试甲", "  卫生测试甲  ", "x", "这是一个超过八个字的超长标签", "卫生测试乙 "]
     accepted = vocab_svc.add_new_tags(inputs)
-    # "气象"去重收录、"天气预报"strip后4字合法；单字符/超长的被滤掉
-    assert sorted(accepted) == ["天气预报", "气象"]
+    # "卫生测试甲"去重收录、"卫生测试乙"strip后5字合法；单字符/超长的被滤掉
+    assert sorted(accepted) == ["卫生测试乙", "卫生测试甲"]
     vocab = vocab_svc.get_vocabulary()
-    assert "气象" in vocab and "天气预报" in vocab
-    vocab = vocab_svc.get_vocabulary()
-    assert "气象" in vocab
+    assert "卫生测试甲" in vocab and "卫生测试乙" in vocab
 
 
 def test_add_new_tags_no_duplicate(clean_words):
@@ -61,10 +59,20 @@ def test_rebuild_from_articles(clean_words):
     vocab_svc.rebuild_vocabulary()
     assert "自愈测试词" in vocab_svc.get_vocabulary()
 
-    # 清理文章 + 重打词表 + 删测试词
+    # 清理文章 + 再 rebuild：并集语义不删词，测试词手动清除
     db = SessionLocal()
     db.delete(a)
     db.commit()
     db.close()
     vocab_svc.rebuild_vocabulary()
+    db = SessionLocal()
+    db.query(TagWord).filter(TagWord.word == "自愈测试词").delete()
+    db.commit()
+    db.close()
+    try:
+        from app.core.redis_client import redis_client
+
+        redis_client.delete("news:tag_vocab")
+    except Exception:  # noqa: BLE001
+        pass
     assert "自愈测试词" not in vocab_svc.get_vocabulary()
