@@ -38,6 +38,7 @@ from app.services.news import rss as rss_svc
 from app.services.news import semantic_check as semantic_svc
 from app.services.news import simhash as simhash_svc
 from app.services.news import vector as vector_svc
+from app.services.news import vocabulary as vocabulary_svc
 from app.services.observability.langfuse_client import get_langfuse, init_langfuse
 from app.services.observability.langfuse_client import score as lf_score
 from app.tasks import celery_app
@@ -263,6 +264,10 @@ def analyze_articles(self) -> str:
                 a.ai_error = None
                 ok += 1
                 consecutive_fail = 0
+                # 新标签写入词表（自生长：Redis 即时可见，下一篇打标即复用）
+                new_words = vocabulary_svc.add_new_tags(result.get("new_tags", []))
+                if new_words:
+                    logger.info("tag vocabulary grown: {}", new_words)
                 # 规则分（全量、零成本）+ judge（采样，glm-4-flash）
                 scores: dict[str, float] = {"schema_compliance": 1.0}
                 scores.update(analyzer_svc.rule_scores(result["summary"], a.content))
@@ -454,11 +459,31 @@ def run_daily_pipeline(self) -> str:
         analyze_articles.si(),
         embed_articles.si(),
         reconcile_vectors.si(),  # 每日对账：清 Milvus 孤儿向量（bad/删除/判重的残留）
+        sync_tag_vocabulary.si(),  # 词表从 articles.tags 聚合重建（幂等自愈，Redis 快照刷新）
         mark_pipeline_done.si(today),  # 链尾成功标记：链被打断则不落 done，当日可补跑
     ).apply_async()
     logger.info("daily pipeline 已触发（补偿 {} 项）", compensated)
     _finish_trace(stage="orchestrate", compensated=compensated)
     return f"pipeline 已触发（补偿 {compensated} 项）"
+
+
+# ---------- 标签词表同步（动态词表自愈，pipeline 尾部） ----------
+
+@celery_app.task(name="app.tasks.news.sync_tag_vocabulary", base=Task)
+def sync_tag_vocabulary() -> str:
+    """词表从 articles.tags 聚合重建（幂等）：覆盖 tag_words 表 + 刷新 Redis 快照。
+
+    articles.tags 是事实源——Redis 快照丢失/LLM 新词漏写表，都能从这里自愈。
+    失败不阻断主链（词表旧一版无害）。
+    """
+    from app.services.news import vocabulary as vocabulary_svc
+
+    try:
+        n = vocabulary_svc.rebuild_vocabulary()
+        return f"词表重建完成（{n} 词）"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("tag vocabulary sync fail: {}", str(exc)[:120])
+        return "词表同步失败（不影响主链）"
 
 
 @celery_app.task(name="app.tasks.news.mark_pipeline_done")

@@ -8,6 +8,21 @@ from app.models.feed import Feed
 router = APIRouter(prefix="/news", tags=["news"])
 
 
+@router.get("/tags")
+def list_tags(db: DB, _user: CurrentUser, limit: int = Query(200, ge=1, le=500)) -> dict:
+    """使用中的标签列表（含文章计数，按计数倒序）：C 端可搜索下拉筛选的数据源。"""
+    rows = db.execute(
+        text(
+            "SELECT tag, COUNT(*) AS count FROM articles, "
+            "jsonb_array_elements_text(tags) AS tag "
+            "WHERE deleted_at IS NULL "
+            "GROUP BY tag ORDER BY count DESC, tag LIMIT :limit"
+        ),
+        {"limit": limit},
+    ).all()
+    return {"items": [{"tag": r.tag, "count": r.count} for r in rows]}
+
+
 @router.get("/stats")
 def news_stats(db: DB) -> dict:
     """首页数据总览：总量/阶段状态/每日入库/分类分布/最后更新时间。公开接口（仅聚合数）。"""

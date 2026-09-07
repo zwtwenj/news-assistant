@@ -7,6 +7,7 @@ from typing import Any
 from loguru import logger
 
 from app.services.llm.gateway import gateway
+from app.services.news.vocabulary import get_vocabulary
 
 CATEGORIES = [
     "娱乐", "体育", "科技", "财经", "社会", "国际",
@@ -15,10 +16,16 @@ CATEGORIES = [
 
 PROMPT = """你是新闻编辑。对下面的新闻做分类打标和摘要。
 
+已有标签词表：{vocabulary}
+
 要求：
 1. summary：50~100 字的客观摘要，不评论；
-2. tags：从以下分类中选择 1~3 个最贴切的：{categories}；
-3. 只输出 JSON，不要任何其他文字，格式：{{"summary": "...", "tags": ["...", "..."]}}
+2. tags：从词表中选 1~3 个最贴切的标签。宁少勿多，通常 1~2 个即可；
+   没有贴切的就只选"其他"，不要硬凑；
+3. new_tags：仅当词表无法覆盖本文核心主题时，生成 1~2 个新标签补充
+   （2~8 字名词短语，如"气象""延迟退休"；不与词表重复）；已覆盖则为空数组；
+4. 只输出 JSON，不要任何其他文字，格式：
+   {{"summary": "...", "tags": ["..."], "new_tags": [...]}}
 
 标题：{title}
 正文：{content}"""
@@ -40,11 +47,14 @@ JUDGE_PROMPT = """你是内容质量评审员。根据新闻正文评估打标�
 def analyze(
     title: str, content: str, langfuse_meta: dict[str, Any] | None = None
 ) -> dict[str, Any] | None:
-    """返回 {"summary": str, "tags": [str]}；失败返回 None（由任务层计 attempts）。
+    """返回 {"summary", "tags", "new_tags"}；失败返回 None（由任务层计 attempts）。
 
-    DeepSeek json_object 模式偶发返回空 content（实测约 1/70），内部快速重试一次。
+    tags 优先取词表内标签；LLM 输出全不在词表时回退用 new_tags 补位（保证 tags 非空）。
+    new_tags 由调用方写入词表（自生长）。DeepSeek json_object 模式偶发返回空 content
+    （实测约 1/70），内部快速重试一次。
     """
-    text = PROMPT.format(categories="/".join(CATEGORIES), title=title, content=content[:4000])
+    vocabulary = get_vocabulary()
+    text = PROMPT.format(vocabulary="、".join(vocabulary), title=title, content=content[:4000])
     last_error: Exception | None = None
     for _attempt in range(2):
         try:
@@ -61,10 +71,16 @@ def analyze(
                 raise ValueError("LLM 返回空内容（json_object 偶发）")
             data = json.loads(raw)
             summary = str(data.get("summary", "")).strip()
-            tags = [str(t) for t in data.get("tags", []) if t in CATEGORIES]
+            vocab = set(vocabulary) or set(CATEGORIES)  # 词表不可用时退回分类白名单
+            tags = [str(t) for t in data.get("tags", []) if t in vocab]
+            new_tags = [str(t).strip() for t in data.get("new_tags", []) if str(t).strip()]
+            if not tags and new_tags:
+                tags = new_tags[:1]  # 词表全落空时用新词补位，保证 tags 非空
             if not summary or not tags:
-                raise ValueError(f"输出字段缺失: summary={'有' if summary else '无'}, tags={tags}")
-            return {"summary": summary, "tags": tags[:3]}
+                raise ValueError(
+                    f"输出字段缺失: summary={'有' if summary else '无'}, tags={tags}"
+                )
+            return {"summary": summary, "tags": tags[:3], "new_tags": new_tags[:2]}
         except Exception as exc:  # noqa: BLE001  空输出/JSON 非法/字段缺失/网关失败
             last_error = exc
             logger.warning(

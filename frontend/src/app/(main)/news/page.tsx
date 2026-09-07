@@ -24,17 +24,31 @@ type ListResp = {
   items: Article[];
 };
 
-const TAGS = ["社会", "国际", "财经", "娱乐", "体育", "科技", "健康", "军事", "教育", "其他"];
+type TagItem = { tag: string; count: number };
 
 export default function NewsListPage() {
   const [data, setData] = useState<ListResp | null>(null);
   const [keyword, setKeyword] = useState(""); // 输入草稿，回车/点搜索才提交到查询
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // 标签可搜索下拉：候选列表 + 输入过滤 + 开合状态
+  const [tagItems, setTagItems] = useState<TagItem[]>([]);
+  const [tagInput, setTagInput] = useState(""); // 下拉框输入草稿（过滤用）
+  const [tagOpen, setTagOpen] = useState(false);
   // 查询态：仅在用户动作（搜索/切标签/翻页/切拦截区）时整体变更，effect 只依赖它 → 每动作恰好一次请求
   const [query, setQuery] = useState({ page: 1, kw: "", tag: "", failed: false, seq: 0 });
   const seqRef = useRef(0); // 响应序号：仅接受最新一次（丢弃过期响应）
   const listRef = useRef<HTMLDivElement>(null); // 列表滚动容器（翻页回顶）
+
+  useEffect(() => {
+    // 标签候选（使用中标签+计数）：一次拉取
+    const t = setTimeout(() => {
+      api<{ items: TagItem[] }>("/news/tags?limit=200")
+        .then((d) => setTagItems(d.items))
+        .catch(() => {});
+    }, 0);
+    return () => clearTimeout(t);
+  }, []);
 
   useEffect(() => {
     // 翻页/筛选切换后列表回顶（滚动在列表内部）
@@ -105,32 +119,71 @@ export default function NewsListPage() {
           />
           查看质检不通过的新闻
         </label>
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            type="button"
-            onClick={() => setQueryPart({ tag: "" })}
-            className={
-              !tag
-                ? "rounded-full bg-foreground px-3 py-1 text-xs text-background"
-                : "rounded-full border border-solid border-black/[.1] px-3 py-1 text-xs text-zinc-600 dark:border-white/[.2] dark:text-zinc-400"
-            }
-          >
-            全部
-          </button>
-          {TAGS.map((t) => (
+        {/* 标签筛选：可搜索下拉（词表自生长，标签数量不定） */}
+        <div className="relative">
+          <input
+            value={tagOpen ? tagInput : tag}
+            onChange={(e) => {
+              setTagInput(e.target.value);
+              setTagOpen(true);
+            }}
+            onFocus={() => {
+              setTagInput("");
+              setTagOpen(true);
+            }}
+            onBlur={() => setTimeout(() => setTagOpen(false), 150)} // 等点选事件先触发
+            placeholder={tag || "按标签筛选"}
+            className="w-44 rounded-md border border-solid border-black/[.1] bg-white px-3 py-2 text-sm text-black outline-none focus:border-black dark:border-white/[.2] dark:bg-black dark:text-zinc-50 dark:focus:border-zinc-50"
+          />
+          {tag && !tagOpen && (
             <button
-              key={t}
               type="button"
-              onClick={() => setQueryPart({ tag: t })}
-              className={
-                tag === t
-                  ? "rounded-full bg-foreground px-3 py-1 text-xs text-background"
-                  : "rounded-full border border-solid border-black/[.1] px-3 py-1 text-xs text-zinc-600 hover:border-black dark:border-white/[.2] dark:text-zinc-400 dark:hover:border-zinc-50"
-              }
+              onClick={() => setQueryPart({ tag: "" })}
+              className="absolute top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+              style={{ insetInlineEnd: 28 }}
+              title="清除标签筛选"
             >
-              {t}
+              ✕
             </button>
-          ))}
+          )}
+          {tagOpen && (
+            <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-md border border-solid border-black/[.1] bg-white py-1 shadow-lg dark:border-white/[.2] dark:bg-zinc-950">
+              {tag && (
+                <button
+                  type="button"
+                  onMouseDown={() => {
+                    setQueryPart({ tag: "" });
+                    setTagOpen(false);
+                  }}
+                  className="block w-full px-3 py-1.5 text-left text-sm text-zinc-500 hover:bg-black/[.04] dark:hover:bg-white/[.06]"
+                >
+                  全部（清除筛选）
+                </button>
+              )}
+              {tagItems
+                .filter((t) => !tagInput || t.tag.includes(tagInput))
+                .map((t) => (
+                  <button
+                    key={t.tag}
+                    type="button"
+                    onMouseDown={() => {
+                      setQueryPart({ tag: t.tag });
+                      setTagOpen(false);
+                    }}
+                    className={
+                      t.tag === tag
+                        ? "block w-full bg-black/[.05] px-3 py-1.5 text-left text-sm text-black dark:bg-white/[.1] dark:text-zinc-50"
+                        : "block w-full px-3 py-1.5 text-left text-sm text-zinc-600 hover:bg-black/[.04] dark:text-zinc-400 dark:hover:bg-white/[.06]"
+                    }
+                  >
+                    {t.tag} <span className="text-xs text-zinc-400">({t.count})</span>
+                  </button>
+                ))}
+              {tagItems.filter((t) => !tagInput || t.tag.includes(tagInput)).length === 0 && (
+                <p className="px-3 py-2 text-sm text-zinc-400">无匹配标签</p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

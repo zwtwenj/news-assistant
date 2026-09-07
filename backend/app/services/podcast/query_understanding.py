@@ -1,12 +1,12 @@
 """播客话题的 query 重写（两层 + 模板抽取）：
 
-1. 规则快路径：封闭标签白名单的关键词映射 + 任务词清洗（零成本零延迟，覆盖
-   "XX新闻"这类直白表达的大多数）+ 模板句正则抽取（"用"…"开头/结尾"）；
-2. LLM 兜底：规则未抽到标签时用 glm-4-flash 做意图分类（从 12 分类白名单选
-   0~2 个）+ rag_query 改写 + 模板抽取。与 demo 聊天线"query 重写"同一思想。
+1. 规则快路径：关键词映射 + 任务词清洗（零成本零延迟，覆盖"XX新闻"这类直白
+   表达的大多数）+ 模板句正则抽取（"用"…"开头/结尾"）；
+2. LLM 兜底：规则未抽到标签时用 glm-4-flash 从动态词表挑相关标签 + rag_query
+   改写 + 模板抽取。与 demo 聊天线"query 重写"同一思想。
 
 产物是多部分 JSON（query_rewrite，多节点拆分）：
-  {tags: 检索过滤标签, rag_query: 检索语义 query,
+  {tags: 检索过滤标签（动态词表子集）, rag_query: 检索语义 query,
    template: {opening, ending} | None —— 脚本节点的开场白/结束语硬约束,
    via: rule / llm / raw}
 未来新增节点（语气、风格…）直接在此 JSON 加 key。
@@ -18,7 +18,6 @@ import re
 from loguru import logger
 
 from app.services.llm.gateway import gateway
-from app.services.news.analyzer import CATEGORIES
 
 # 关键词 → 白名单标签（快路径词表，LLM 兜底也输出同一白名单）
 TOPIC_TAG_MAP = {
@@ -35,10 +34,11 @@ TASK_WORDS = ("生成", "制作", "帮我", "给我", "一份", "一期", "一�
               "播客", "节目", "音频", "电台", "新闻", "资讯", "聊聊", "谈谈", "关于")
 
 LLM_PROMPT = """用户想生成一期新闻播客，给出话题描述。请做三件事：
-1. 从以下分类白名单中选出 0~2 个最贴切的分类：{categories}
-   （话题没有明确类别倾向就选空数组，不要硬选）；
+1. 从标签词表中挑选 1~3 个与话题最相关的标签（词表里没有相关的就给空数组，不要硬选）：
+   {vocabulary}
 2. 把话题改写成适合新闻检索的语义 query（rag_query）：去掉"生成/一份/播客"等
-   任务性词汇和开场白/结束语要求，只保留核心主题词，可适当补充同义关键词；
+   任务性词汇和开场白/结束语要求，围绕核心主题补充同义关键词（如天气话题可补充
+   "降雨 台风 气象预警 天气预报"），输出 10~30 字；
 3. 若话题明确要求了开场白/结束语话术，提取到 template；没有就输出 null。
 
 只输出 JSON：{{"tags": ["..."], "rag_query": "...",
@@ -116,13 +116,19 @@ def extract_template(topic: str) -> tuple[dict | None, str]:
 
 def understand_topic(topic: str) -> TopicIntent:
     """规则快路径 → LLM 兜底 → 原样兜底（永不抛错）。template 抽取两条路径共用正则。"""
+    from app.services.news.vocabulary import get_vocabulary
+
     # 0) 模板句抽取（正则，两条路径共用；残余文本不再进检索 query）
     template, residual = extract_template(topic)
+    vocabulary = get_vocabulary()
+    vocab_set = set(vocabulary)
 
     # 1) 规则：关键词抽标签（优先残余文本，无命中回退原话题） + 任务词清洗
     tags = [tag for kw, tag in TOPIC_TAG_MAP.items() if kw in residual] or [
         tag for kw, tag in TOPIC_TAG_MAP.items() if kw in topic
     ]
+    # 词表收窄：规则映射出的标签必须仍在词表中（旧分类 seed 已入词表，动态删除的标签不再误用）
+    tags = [t for t in tags if t in vocab_set] if vocab_set else tags
     query = _strip_task_words(residual)
     if tags:
         return TopicIntent(tags=tags, query=query or topic, via="rule", template=template)
@@ -133,7 +139,7 @@ def understand_topic(topic: str) -> TopicIntent:
             "zhipu",
             messages=[
                 {"role": "user", "content": LLM_PROMPT.format(
-                    categories="/".join(CATEGORIES), topic=topic)}
+                    vocabulary="、".join(vocabulary), topic=topic)}
             ],
             response_format={"type": "json_object"},
             max_tokens=300,
@@ -143,7 +149,7 @@ def understand_topic(topic: str) -> TopicIntent:
         import json
 
         data = json.loads((resp.choices[0].message.content or "").strip() or "{}")
-        llm_tags = [t for t in data.get("tags", []) if t in CATEGORIES][:2]
+        llm_tags = [t for t in data.get("tags", []) if t in vocab_set][:3]
         llm_query = str(data.get("rag_query") or data.get("query", "")).strip()[:60]
         if llm_tags or llm_query:
             llm_template = data.get("template") if isinstance(data.get("template"), dict) else None

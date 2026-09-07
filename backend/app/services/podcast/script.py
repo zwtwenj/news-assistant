@@ -26,7 +26,7 @@ from app.services.podcast.query_understanding import TopicIntent, understand_top
 SCRIPT_PROVIDER = "dashscope"
 SCRIPT_MODEL = "qwen-plus"
 SEARCH_DAYS = 7
-MIN_SCORE = 0.25  # 检索分数下限：全低于此 = 库里没有相关内容
+MIN_SCORE = 0.15  # 检索分数下限（rerank 对泛 query 打分保守，粗筛放宽交给精排排序）
 CONTENT_EXCERPT = 2000  # 每条素材注入的正文节选字数（新闻导语/背景常在文中后段，不宜截太狠）
 
 # 页面噪音黑名单：trafilatura 抽取的正文仍可能混入导航/页脚行，注入前过滤
@@ -126,11 +126,13 @@ def _plan(target_minutes: int) -> dict[str, Any]:
 
 
 def _search_materials(topic: str, top_k: int) -> tuple[list[dict[str, Any]], TopicIntent]:
-    """检索素材（三段式）：query 理解 → 多路召回 → rerank 精排。
+    """检索素材（三段式）：query 理解 → 双路召回 → rerank 精排。
 
-    ① understand_topic：抽 tags + rag_query + template（开场白/结束语模板）
-    ② 召回：tags 过滤的向量检索 top_k×3（无命中降级纯语义），阈值过滤
-    ③ gte-rerank-v2 精排：精排分降序为主（语义相关优先），新鲜度作次级排序
+    ① understand_topic：抽 tags（动态词表子集 1~3 个）+ rag_query + template
+    ② 双路召回（各 top_k×3，阈值过滤后合并去重）：
+       - 标签路：tags_any 过滤的语义检索（保证主题覆盖，词表命中时才走）
+       - 语义路：无过滤纯语义检索（防标签过滤误伤，泛话题的主力）
+    ③ gte-rerank-v2 统一精排：精排分降序为主，新鲜度次级排序
     返回 (命中列表 ≤ top_k+2 备选, 完整 TopicIntent)；0 命中由调用方拒绝。
     """
     intent = understand_topic(topic)
@@ -143,14 +145,20 @@ def _search_materials(topic: str, top_k: int) -> tuple[list[dict[str, Any]], Top
         )
         return [h for h in hits if h["score"] >= MIN_SCORE]
 
-    candidates = _recall(intent.tags or None)
-    if intent.tags and not candidates:  # 类别无命中 → 降级纯语义
-        logger.info("话题类别 {} 无命中，降级纯语义检索", intent.tags)
-        candidates = _recall(None)
-    if not candidates:
+    candidates: dict[int, dict[str, Any]] = {}
+    if intent.tags:
+        for h in _recall(intent.tags):
+            candidates[h["article_id"]] = h
+    for h in _recall(None):  # 语义路总是执行：双路互补，标签过滤误伤时兜底
+        candidates.setdefault(h["article_id"], h)
+    merged = list(candidates.values())
+    logger.info(
+        "双路召回 via={} tags={} 合并候选 {}", intent.via, intent.tags, len(merged)
+    )
+    if not merged:
         return [], intent
 
-    reranked = vector_svc.rerank(intent.query, candidates)
+    reranked = vector_svc.rerank(intent.query, merged)
     # 精排分为主、新鲜度为辅（相关优先，7 天窗口已保证时效下限）
     reranked.sort(
         key=lambda h: (h.get("rerank_score") or 0, h["publish_ts"]), reverse=True
