@@ -1,12 +1,13 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, UploadFile
 
 from app.api.deps import DB, CurrentUser
 from app.core.redis_client import redis_client
 from app.models.admin_host import AdminHost
 from app.models.podcast import Podcast
 from app.schemas.podcast import PodcastCreate, PodcastCreateOut, PodcastOut, PodcastUpdateIn
+from app.services.storage import oss as oss_svc
 from app.tasks.podcast import dispatch_podcast_pipeline
 
 router = APIRouter(prefix="/podcasts", tags=["podcasts"])
@@ -130,6 +131,39 @@ def update_podcast(
     db.commit()
     db.refresh(p)
     return PodcastOut.model_validate(p)
+
+
+@router.post("/{podcast_id}/feed")
+def publish_to_feed(
+    podcast_id: int, body: dict, db: DB, user: CurrentUser
+) -> dict:
+    """发布/撤下单集到自己的 RSS feed（声明式同步，平台按 guid 幂等更新）。"""
+    p = _get_owned(db, user, podcast_id)
+    published = bool(body.get("published"))
+    if published:
+        if p.status != "succeeded" or not p.audio_url:
+            raise HTTPException(status_code=422, detail="仅生成成功的播客可发布")
+        p.feed_published_at = datetime.now(UTC)
+    else:
+        p.feed_published_at = None
+    db.commit()
+    return {"status": "ok", "published": published}
+
+
+@router.post("/cover")
+def upload_cover(user: CurrentUser, file: UploadFile) -> dict:
+    """单集封面上传（jpg/png，≤5MB）→ OSS 公有读直链。"""
+    if file.content_type not in ("image/jpeg", "image/png"):
+        raise HTTPException(status_code=422, detail="仅支持 jpg/png")
+    data = file.file.read()
+    if len(data) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=422, detail="图片不能超过 5MB")
+    ext = "jpg" if file.content_type == "image/jpeg" else "png"
+    key = f"news/covers/{user.id}/{int(datetime.now(UTC).timestamp())}.{ext}"
+    url = oss_svc.upload_bytes(data, key, file.content_type)
+    if not url:
+        raise HTTPException(status_code=502, detail="封面上传失败，请重试")
+    return {"url": url}
 
 
 @router.delete("/{podcast_id}")
