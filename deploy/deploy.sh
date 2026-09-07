@@ -18,6 +18,11 @@ docker compose run --rm --no-deps web alembic upgrade head
 echo "==> 拉起服务"
 docker compose up -d
 
+# web 容器重建后 IP 会变化，nginx 缓存的上游解析已失效（502），重启使其重新解析
+echo "==> 重启 nginx（重新解析重建容器的上游 IP）"
+docker compose restart nginx >/dev/null 2>&1
+sleep 2
+
 echo "==> 等待健康检查"
 for i in $(seq 1 20); do
   if curl -fsS http://localhost:8080/healthz >/dev/null 2>&1; then
