@@ -38,7 +38,9 @@ def client(monkeypatch: pytest.MonkeyPatch):
 
 def test_jwt_roundtrip() -> None:
     token, ttl = create_access_token(42)
-    assert ttl == 120 * 60
+    from app.core.config import get_settings
+
+    assert ttl == get_settings().jwt_access_ttl_minutes * 60  # 7 天免登录
     payload = decode_access_token(token)
     assert payload is not None
     assert payload["sub"] == "42"
@@ -145,8 +147,25 @@ def test_refresh_rotation_and_replay(client: TestClient) -> None:
     new_refresh = client.cookies.get("refresh_token")
     assert new_refresh and new_refresh != old_refresh
 
-    # 重放旧 refresh → 401，且新 refresh 也被连坐吊销
+    # 宽限期内（60s）重放旧 refresh：多标签页并发续期场景 → 放行（200），非重放攻击
     resp = client.post("/api/v1/auth/refresh", json={"refresh_token": old_refresh})
+    assert resp.status_code == 200
+    grace_refresh = client.cookies.get("refresh_token")
+    assert grace_refresh and grace_refresh != new_refresh
+
+    # 超过宽限期的重放（人工把 revoked_at 拨老）→ 401，且该用户全部会话被连坐吊销
+    from datetime import UTC, datetime, timedelta
+
+    from app.db.session import SessionLocal
+    from app.models.refresh_token import RefreshToken
+
+    db = SessionLocal()
+    db.query(RefreshToken).filter(RefreshToken.revoked_at.is_(None)).update(
+        {"revoked_at": datetime.now(UTC) - timedelta(minutes=5)}
+    )
+    db.commit()
+    db.close()
+    resp = client.post("/api/v1/auth/refresh", json={"refresh_token": grace_refresh})
     assert resp.status_code == 401
     resp = client.post("/api/v1/auth/refresh", json={"refresh_token": new_refresh})
     assert resp.status_code == 401

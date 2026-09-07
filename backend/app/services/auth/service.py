@@ -23,6 +23,7 @@ from app.services.sms import get_sms_provider
 PHONE_DAILY_LIMIT = 10
 IP_HOURLY_LIMIT = 20
 IP_DAILY_LIMIT = 100
+_ROTATE_GRACE_SECONDS = 60  # refresh 轮换并发宽限（多标签页同时静默续期）
 
 
 # ---------- 发送验证码 ----------
@@ -122,20 +123,28 @@ def _issue_tokens(db: Session, user: User) -> TokenPair:
 
 
 def rotate_refresh(db: Session, raw_refresh: str) -> TokenPair:
-    """轮换：旧的 revoke、发新的。已 revoked 的 token 被重放 → 吊销该用户全部会话。"""
+    """轮换：旧的 revoke、发新的。
+
+    并发宽限：多标签页同时静默续期时，后到的请求拿的是刚被轮换掉的旧 token——
+    宽限期内（60s）不算重放攻击，直接再发一对新 token；超过宽限期仍重放才判定
+    token 被盗，吊销该用户全部会话。
+    """
     rt = db.query(RefreshToken).filter(RefreshToken.token_hash == _hash_token(raw_refresh)).first()
     if rt is None:
         raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
     if rt.revoked_at is not None:
-        db.query(RefreshToken).filter(
-            RefreshToken.user_id == rt.user_id, RefreshToken.revoked_at.is_(None)
-        ).update({"revoked_at": datetime.now(UTC)})
-        db.commit()
-        raise HTTPException(status_code=401, detail="检测到异常使用，已吊销全部会话")
+        if datetime.now(UTC) - rt.revoked_at > timedelta(seconds=_ROTATE_GRACE_SECONDS):
+            db.query(RefreshToken).filter(
+                RefreshToken.user_id == rt.user_id, RefreshToken.revoked_at.is_(None)
+            ).update({"revoked_at": datetime.now(UTC)})
+            db.commit()
+            raise HTTPException(status_code=401, detail="检测到异常使用，已吊销全部会话")
+        # 宽限期内：并发续期，放行
+    else:
+        rt.revoked_at = datetime.now(UTC)
     if rt.expires_at < datetime.now(UTC):
         raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
 
-    rt.revoked_at = datetime.now(UTC)
     user = db.get(User, rt.user_id)
     if user is None or user.status == "banned":
         raise HTTPException(status_code=403, detail="账号不可用")
@@ -143,7 +152,8 @@ def rotate_refresh(db: Session, raw_refresh: str) -> TokenPair:
 
 
 def revoke_refresh(db: Session, raw_refresh: str) -> None:
+    """主动登出：立即失效，不享受轮换宽限（revoked_at 拨到宽限期外，重放即判盗用）。"""
     rt = db.query(RefreshToken).filter(RefreshToken.token_hash == _hash_token(raw_refresh)).first()
     if rt is not None and rt.revoked_at is None:
-        rt.revoked_at = datetime.now(UTC)
+        rt.revoked_at = datetime.now(UTC) - timedelta(seconds=_ROTATE_GRACE_SECONDS + 1)
         db.commit()
