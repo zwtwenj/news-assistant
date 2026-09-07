@@ -7,7 +7,15 @@ from app.api.deps import ACCESS_COOKIE, DB, REFRESH_COOKIE
 from app.core.config import get_settings
 from app.core.errcode import REFRESH_INVALID, ApiError
 from app.models.user import User
-from app.schemas.auth import CaptchaOut, DevLoginIn, LoginIn, RefreshIn, SmsSendIn, TokenPair, UserOut
+from app.schemas.auth import (
+    CaptchaOut,
+    DevLoginIn,
+    LoginIn,
+    RefreshIn,
+    SmsSendIn,
+    TokenPair,
+    UserOut,
+)
 from app.services.auth import service as auth_svc
 from app.services.auth.jwt import create_access_token
 
