@@ -17,6 +17,11 @@ const nextConfig: NextConfig = {
         source: "/media/:path*",
         destination: `${BACKEND_URL}/media/:path*`,
       },
+      {
+        // 公开 RSS 订阅端点（用户拿 feed URL 到平台提交，须可公网访问）
+        source: "/feed/:path*",
+        destination: `${BACKEND_URL}/feed/:path*`,
+      },
     ];
   },
 };

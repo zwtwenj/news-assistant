@@ -1,6 +1,6 @@
 "use client";
 
-import { BarChart3, Headphones, Mic, Newspaper, User } from "lucide-react";
+import { BarChart3, Bot, Headphones, Mic, Newspaper, User } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -10,6 +10,7 @@ const MENU: { href: string; label: string; icon: LucideIcon; disabled?: boolean 
   { href: "/news", label: "新闻列表", icon: Newspaper },
   { href: "/podcasts", label: "播客生成", icon: Mic },
   { href: "/podcasts/history", label: "我的播客", icon: Headphones },
+  { href: "/chat", label: "AI 助手", icon: Bot },
   { href: "/account", label: "我的账号", icon: User },
 ];
 

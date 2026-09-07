@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     rss_public_base: str = "http://localhost:3000"  # feed 对外地址前缀（生产 https://news.icarus-lab.fun）
     rss_default_cover: str = ""  # 默认频道封面完整 URL（1400x1400+，发布前必须配好）
 
+    # 聊天助手（Viking 记忆库 per-user 画像 / 博查联网搜索）
+    viking_memory_key: str = ""
+    viking_memory_base: str = "https://api-knowledgebase.mlp.cn-beijing.volces.com"
+    viking_collection: str = "icarus_lab"
+    viking_project: str = "default"
+    bocha_key: str = ""
+
     # 播客合成
     ffmpeg_path: str = "ffmpeg"  # Windows 本地开发填 backend/bin/ffmpeg.exe 绝对路径
     media_dir: str = "media"  # 本地暂存根（相对 backend/），生成中分段/拼接用

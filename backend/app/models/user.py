@@ -17,6 +17,8 @@ class User(Base):
     # GitHub OAuth：github_id 全局唯一；github_login 为展示名（GitHub 用户名，可能改名）
     github_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
     github_login: Mapped[str | None] = mapped_column(String(100))
+    # Viking 记忆库 per-user 画像标识（news_u_{id}，聊天助手用）
+    viking_user_id: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(20), default="active", server_default="active")
     # last_login_at：后管用户管理展示
     # disabled_at = 停用/启用操作时间，早于它签发的 token 全部作废（再启用需重新登录）

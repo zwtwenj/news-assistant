@@ -1,4 +1,5 @@
 import PodcastList from "@/components/PodcastList";
+import RssFeedCard from "@/components/RssFeedCard";
 
 export default function PodcastHistoryPage() {
   return (
@@ -9,6 +10,7 @@ export default function PodcastHistoryPage() {
           点击「开始生成」即入库排队；生成中与失败的条目也会保留在列表
         </p>
       </div>
+      <RssFeedCard />
       <PodcastList />
     </div>
   );
