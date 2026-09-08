@@ -221,28 +221,86 @@ def upload_image(user: CurrentUser, file: UploadFile) -> dict:
     return {"image_id": image_id, "expires_in": 300}
 
 
-# ---------- 语音输入（ASR，dashscope qwen-audio） ----------
+# ---------- 语音输入（ASR：百炼 qwen-audio-3.0-asr-flash，对齐 blog demo） ----------
+
+_ASR_URL = (
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc"
+    "/multimodal-generation/generation"
+)
+_ASR_MODEL = "qwen-audio-3.0-asr-flash"
+_MAX_AUDIO_BYTES = 2 * 1024 * 1024  # 约 1 分钟压缩录音；防绕过前端投递长音频烧钱
+# 浏览器 MIME → DashScope format 参数
+_ASR_FORMAT = {
+    "audio/webm": "webm",
+    "audio/wav": "wav",
+    "audio/wave": "wav",
+    "audio/x-wav": "wav",
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/mp4": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/ogg": "ogg",
+}
 
 
 @router.post("/voice-input")
 def voice_input(user: CurrentUser, file: UploadFile) -> dict:
-    data = file.file.read()
-    if len(data) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=422, detail="音频不能超过 5MB")
+    """语音转文字：录音 → base64 内联 → Qwen-Audio-3.0-ASR-Flash → {"text"}。
+
+    静音/噪音返回空 text（前端静默不填入）；上游失败抛 502 带原因。
+    """
     import httpx
 
     from app.core.config import get_settings
 
-    s = get_settings()
+    data = file.file.read()
+    if len(data) > _MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=422, detail="音频过大（上限 2MB，约 1 分钟）")
+    if len(data) < 100:
+        raise HTTPException(status_code=422, detail="音频过短（可能是误触）")
+
+    mime = file.content_type or "audio/webm"
+    fmt = _ASR_FORMAT.get(mime, "wav")
     b64 = base64.b64encode(data).decode()
-    resp = httpx.post(
-        "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
-        "?action=post&version=v1",
-        headers={"Authorization": f"Bearer {s.dashscope_api_key}"},
-        json={"model": "qwen-audio-asr", "input": {"audio_data": b64}},
-        timeout=60,
-    )
-    return {"text": "", "raw": resp.text[:200]}
+    s = get_settings()
+    try:
+        resp = httpx.post(
+            _ASR_URL,
+            headers={"Authorization": f"Bearer {s.dashscope_api_key}"},
+            json={
+                "model": _ASR_MODEL,
+                "input": {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_audio",
+                                    "input_audio": {"data": f"data:{mime};base64,{b64}"},
+                                }
+                            ],
+                        }
+                    ]
+                },
+                "parameters": {"format": fmt, "language_hints": ["zh"]},
+            },
+            timeout=30,
+        )
+        body = resp.json()
+        if "NO_WORDS" in str(body.get("message", "")):  # 无语音内容（安静/噪音）
+            return {"text": ""}
+        if resp.status_code != 200 or body.get("code", "") not in (0, "", None):
+            raise HTTPException(
+                status_code=502,
+                detail=f"语音识别失败: {body.get('message', resp.text[:150])}",
+            )
+        return {"text": (body.get("output") or {}).get("text", "").strip()}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502, detail=f"语音转写异常: {str(exc)[:150]}"
+        ) from exc
 
 
 # ---------- 语音输出（MiniMax TTS，复用播客 tts 参数） ----------
