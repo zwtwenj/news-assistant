@@ -12,6 +12,8 @@ import {
   MessageSquarePlus,
   Mic,
   Square,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
   Volume2,
   X,
@@ -236,6 +238,8 @@ export default function ChatPage() {
               meta.tool_calls = collectedTools;
               if (ev.rag_sources) meta.rag_sources = ev.rag_sources;
               setToolEvents([...collectedTools]);
+            } else if (ev.type === "done") {
+              if (ev.trace_id) meta.trace_id = ev.trace_id;
             } else if (ev.type === "error") {
               throw new Error(ev.message);
             }
@@ -329,7 +333,24 @@ export default function ChatPage() {
             </div>
           )}
           {messages.map((m) => (
-            <MessageBubble key={m.id} msg={m} onSpeak={speak} speaking={speaking} />
+            <MessageBubble
+              key={m.id}
+              msg={m}
+              onSpeak={speak}
+              speaking={speaking}
+              onFeedback={(tid, r) => void api("/chat/feedback", {
+                method: "POST",
+                body: JSON.stringify({ trace_id: tid, rating: r }),
+              }).then(() => {
+                setMessages((prev) =>
+                  prev.map((x) =>
+                    x.id === m.id
+                      ? { ...x, meta: { ...x.meta, feedback: r } }
+                      : x,
+                  ),
+                );
+              })}
+            />
           ))}
           {streaming && (
             <div className="flex justify-start">
@@ -427,11 +448,19 @@ function MessageBubble({
   msg,
   onSpeak,
   speaking,
+  onFeedback,
 }: {
   msg: StoredMessage;
   onSpeak: (t: string) => void;
   speaking: boolean;
+  onFeedback: (traceId: string, rating: 0 | 1) => void;
 }) {
+  const [feedback, setFeedback] = useState<0 | 1 | null>(msg.meta?.feedback ?? null);
+
+  // 父组件数据刷新后同步已提交状态
+  useEffect(() => {
+    setFeedback(msg.meta?.feedback ?? null);
+  }, [msg.meta?.feedback]);
   const isUser = msg.role === "user";
   const newsResult = !isUser
     ? (msg.meta?.tool_calls ?? []).filter((t) => t.name === "list_today_news")
@@ -491,15 +520,42 @@ function MessageBubble({
           </details>
         )}
         {!isUser && msg.content.length > 4 && (
-          <button
-            type="button"
-            disabled={speaking}
-            onClick={() => void onSpeak(msg.content)}
-            className="flex items-center gap-1 text-xs text-zinc-400 hover:text-foreground"
-            title="语音播报"
-          >
-            <Volume2 className="size-3.5" /> 播报
-          </button>
+          <div className="flex items-center gap-2 text-xs text-zinc-400">
+            <button
+              type="button"
+              disabled={speaking}
+              onClick={() => void onSpeak(msg.content)}
+              className="flex items-center gap-1 hover:text-foreground"
+              title="语音播报"
+            >
+              <Volume2 className="size-3.5" /> 播报
+            </button>
+            {msg.meta?.trace_id && feedback === null && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onFeedback(msg.meta!.trace_id!, 1)}
+                  className="hover:text-emerald-500"
+                  title="有用"
+                >
+                  <ThumbsUp className="size-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onFeedback(msg.meta!.trace_id!, 0)}
+                  className="hover:text-red-500"
+                  title="没用"
+                >
+                  <ThumbsDown className="size-3.5" />
+                </button>
+              </>
+            )}
+            {msg.meta?.feedback != null && (
+              <span className={msg.meta.feedback ? "text-emerald-500" : "text-red-400"}>
+                {msg.meta.feedback ? "已标记有用" : "已标记无用"}
+              </span>
+            )}
+          </div>
         )}
       </div>
     </div>

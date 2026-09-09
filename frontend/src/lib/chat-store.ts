@@ -21,6 +21,8 @@ export type MessageMeta = {
   image_id?: string;
   image_preview?: string; // dataURL 预览
   error?: string;
+  trace_id?: string; // Langfuse trace：👍/👎 评分挂载点
+  feedback?: 0 | 1; // 用户已提交的评分
 };
 
 export type StoredMessage = {
