@@ -536,19 +536,17 @@ function MessageBubble({
               <>
                 <button
                   type="button"
-                  disabled={feedback === 1}
                   onClick={() => onFeedback(msg.meta!.trace_id!, feedback === 1 ? null : 1)}
                   className={feedback === 1 ? "text-emerald-500" : "hover:text-emerald-500"}
-                  title="有用"
+                  title={feedback === 1 ? "撤销评分" : "有用"}
                 >
                   <ThumbsUp className="size-3.5" />
                 </button>
                 <button
                   type="button"
-                  disabled={feedback === 0}
                   onClick={() => onFeedback(msg.meta!.trace_id!, feedback === 0 ? null : 0)}
                   className={feedback === 0 ? "text-red-500" : "hover:text-red-500"}
-                  title="没用"
+                  title={feedback === 0 ? "撤销评分" : "没用"}
                 >
                   <ThumbsDown className="size-3.5" />
                 </button>
