@@ -37,10 +37,15 @@ REWRITE_PROMPT = """以下是一段多轮对话的历史和用户的最新问题
 只输出 JSON：{{"rewritten": "<改写后的问题>"}}"""
 
 
-def rewrite_query(history: list[dict], query: str) -> str:
-    """多轮指代消解：取最近 6 条历史改写成独立检索 query；失败回退原 query。"""
+def rewrite_query(history: list[dict], query: str) -> tuple[str, str | None]:
+    """多轮指代消解：取最近 6 条历史改写成独立检索 query。
+
+    返回 (rewritten_query, trace_id)——trace_id 来自网关 Langfuse 集成，
+    供 👍/👎 用户评分挂载到对应 trace。失败回退 (原 query, None)。
+    """
+    meta: dict = {"chat_rewrite": True, "query": query[:50]}
     if not history:
-        return query
+        return query, meta.get("_trace_id")
     hist_text = "\n".join(
         f"{'用户' if m['role'] == 'user' else '助手'}：{m['content'][:200]}"
         for m in history[-6:]
@@ -53,16 +58,16 @@ def rewrite_query(history: list[dict], query: str) -> str:
             response_format={"type": "json_object"},
             max_tokens=200,
             temperature=0.0,
-            langfuse_meta={"chat_rewrite": True, "query": query[:50]},
+            langfuse_meta=meta,
         )
         content = resp.choices[0].message.content or "{}"
         rewritten = str(json.loads(content).get("rewritten", "")).strip()
         if rewritten:
             logger.info("query rewrite: {!r} -> {!r}", query[:40], rewritten[:60])
-            return rewritten
+            return rewritten, meta.get("_trace_id")
     except Exception as exc:  # noqa: BLE001  失败回退原 query
         logger.opt(exception=True).warning("rewrite_query fail: {}", str(exc)[:60])
-    return query
+    return query, None
 
 
 def retrieve(query: str, top_k: int = RAG_TOP_K) -> list[dict[str, Any]]:

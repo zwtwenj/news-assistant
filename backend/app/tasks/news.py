@@ -138,16 +138,20 @@ def fetch_feeds(self) -> str:
             feed_stats[feed.name] = len(entries)
             db.commit()
         logger.info("fetch_feeds 完成：新增 {} 篇（已存在跳过 {}）", added, skipped)
-        # 零入库告警：有启用的源但 0 新增 = 所有源拉取失败（如镜像站宕机），飞书告警
-        enabled_count = sum(1 for st in feed_stats.values() if st != "error")
-        if added == 0 and enabled_count > 0:
-            failed_feeds = [name for name, st in feed_stats.items() if st == "error"]
-            alert_msg = f"今日 RSS 拉取 0 新增（启用源 {len(feed_stats)} 个，新增 0 篇）。"
-            if failed_feeds:
-                alert_msg += f"拉取失败源：{'、'.join(failed_feeds[:5])}。"
-            alert_msg += "请检查 RSS 源可用性，恢复后手动触发补拉。"
-            logger.error(alert_msg)
-            send_alert("新闻入库告警：RSS 拉取零新增", alert_msg, dedup_key="fetch_zero")
+
+        # 飞书统计告警：每次拉取结束汇报详情（新增/跳过/失效源清单）
+        failed_feeds = [name for name, st in feed_stats.items() if st == "error"]
+        ok_count = len(feed_stats) - len(failed_feeds)
+        alert_lines = [
+            f"新增 {added} 篇 ｜ 跳过(已存在) {skipped} 篇"
+            f" ｜ 成功源 {ok_count} 个 ｜ 失效源 {len(failed_feeds)} 个",
+        ]
+        if failed_feeds:
+            alert_lines.append(f"失效源：{'、'.join(failed_feeds)}（本次未拉取）")
+        if added == 0:
+            alert_lines.append("⚠ 今日新增 0 篇，请检查源可用性或手动触发补拉。")
+        send_alert("RSS 拉取报告", "\n".join(alert_lines))
+
         _finish_trace(stage="fetch", added=added, url_duplicated=skipped, feeds=feed_stats)
         return f"新增 {added} 篇"
     finally:
