@@ -31,6 +31,7 @@ from app.models.article import (
     Article,
 )
 from app.models.feed import Feed
+from app.services.alert import send_alert
 from app.services.news import analyzer as analyzer_svc
 from app.services.news import extractor as extractor_svc
 from app.services.news import quality as quality_svc
@@ -137,6 +138,16 @@ def fetch_feeds(self) -> str:
             feed_stats[feed.name] = len(entries)
             db.commit()
         logger.info("fetch_feeds 完成：新增 {} 篇（已存在跳过 {}）", added, skipped)
+        # 零入库告警：有启用的源但 0 新增 = 所有源拉取失败（如镜像站宕机），飞书告警
+        enabled_count = sum(1 for st in feed_stats.values() if st != "error")
+        if added == 0 and enabled_count > 0:
+            failed_feeds = [name for name, st in feed_stats.items() if st == "error"]
+            alert_msg = f"今日 RSS 拉取 0 新增（启用源 {len(feed_stats)} 个，新增 0 篇）。"
+            if failed_feeds:
+                alert_msg += f"拉取失败源：{'、'.join(failed_feeds[:5])}。"
+            alert_msg += "请检查 RSS 源可用性，恢复后手动触发补拉。"
+            logger.error(alert_msg)
+            send_alert("新闻入库告警：RSS 拉取零新增", alert_msg, dedup_key="fetch_zero")
         _finish_trace(stage="fetch", added=added, url_duplicated=skipped, feeds=feed_stats)
         return f"新增 {added} 篇"
     finally:

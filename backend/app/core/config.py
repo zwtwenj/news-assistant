@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     viking_project: str = "default"
     bocha_key: str = ""
 
+    # 飞书群机器人告警（webhook；空 = 关闭）
+    feishu_webhook_url: str = ""
+
     # 播客合成
     ffmpeg_path: str = "ffmpeg"  # Windows 本地开发填 backend/bin/ffmpeg.exe 绝对路径
     media_dir: str = "media"  # 本地暂存根（相对 backend/），生成中分段/拼接用
