@@ -50,8 +50,10 @@ def gen_script(self, podcast_id: int) -> str:
                 p.mode, p.topic_prompt, p.script_prompt, p.script_prompt_a, p.script_prompt_b,
                 target_minutes=p.target_minutes,
                 host_names=p.host_names,
-                # 标题优先用用户编辑的，其次 query 重写生成的（intent 落库后可用）
+                # 标题优先用用户编辑的，其次 query 重写生成的
                 podcast_title=p.title or (p.query_rewrite or {}).get("title"),
+                # 创建流程已落库的重写产物（旧数据 NULL → 生成内部兜底重写）
+                query_rewrite=p.query_rewrite,
             )
         except script_svc.ScriptError as exc:
             _fail(db, p, str(exc))  # 业务性失败（如素材不足）不重试
@@ -61,9 +63,10 @@ def gen_script(self, podcast_id: int) -> str:
             return f"failed(podcast={podcast_id})"
         p.script = result["segments"]
         p.materials = result["materials"]  # 本期引用的新闻清单（可追溯）
-        p.query_rewrite = result["intent"]  # 重写 JSON：tags/rag_query/template/via（后管可调试）
-        if result["intent"].get("title"):
-            p.title = result["intent"]["title"]  # LLM 生成的播客标题（用户可在编辑弹窗覆盖）
+        if p.query_rewrite is None:  # 旧数据兜底：创建时未重写的在此补
+            p.query_rewrite = result["intent"]
+            if result["intent"].get("title") and p.title is None:
+                p.title = result["intent"]["title"]
         p.error = None
         # TTS 关闭模式（调试脚本用）：脚本完成即成功，不做语音合成
         p.status = "succeeded" if not get_settings().podcast_tts_enabled else "synthesizing"

@@ -133,17 +133,21 @@ def _plan(target_minutes: int) -> dict[str, Any]:
 # 话题→标签映射已迁移至 query_understanding.py（两层 query 理解）
 
 
-def _search_materials(topic: str, top_k: int) -> tuple[list[dict[str, Any]], TopicIntent]:
+def _search_materials(
+    topic: str, top_k: int, intent: TopicIntent | None = None
+) -> tuple[list[dict[str, Any]], TopicIntent]:
     """检索素材（三段式）：query 理解 → 双路召回 → rerank 精排。
 
-    ① understand_topic：抽 tags（动态词表子集 1~3 个）+ rag_query + template
+    ① intent 已由创建流程产出（title/rag_query/template 随播客入库）时直接使用，
+       不再重复调 LLM；为 None（兼容直调/旧数据）才在内部 understand_topic
     ② 双路召回（各 top_k×3，阈值过滤后合并去重）：
        - 标签路：tags_any 过滤的语义检索（保证主题覆盖，词表命中时才走）
        - 语义路：无过滤纯语义检索（防标签过滤误伤，泛话题的主力）
     ③ gte-rerank-v2 统一精排：精排分降序为主，新鲜度次级排序
     返回 (命中列表 ≤ top_k+2 备选, 完整 TopicIntent)；0 命中由调用方拒绝。
     """
-    intent = understand_topic(topic)
+    if intent is None:
+        intent = understand_topic(topic)
     week_ago = int(time.time()) - SEARCH_DAYS * 86400
     recall_k = top_k * 3
 
@@ -247,6 +251,7 @@ def generate_script(
     target_minutes: int = 4,
     host_names: list[str] | None = None,
     podcast_title: str | None = None,
+    query_rewrite: dict | None = None,
 ) -> dict[str, Any]:
     """返回 {"segments": [...], "materials": [命中清单], "intent": 检索意图}。
 
@@ -256,7 +261,19 @@ def generate_script(
     素材为 0 或输出非法时抛 ScriptError（任务层计失败）。
     """
     plan = _plan(target_minutes)
-    hits, intent = _search_materials(topic_prompt, plan["top_k"])
+    # 创建流程已重写（title/rag_query/template 在库），重建 intent 复用；旧数据 None 则内部重写
+    intent_in = (
+        TopicIntent(
+            tags=(query_rewrite or {}).get("tags") or [],
+            query=(query_rewrite or {}).get("rag_query") or topic_prompt,
+            via=(query_rewrite or {}).get("via") or "raw",
+            template=(query_rewrite or {}).get("template"),
+            title=(query_rewrite or {}).get("title"),
+        )
+        if query_rewrite
+        else None
+    )
+    hits, intent = _search_materials(topic_prompt, plan["top_k"], intent=intent_in)
     if not hits:
         raise ScriptError("素材不足，无法为你生成播客：近期新闻库中没有与话题相关的内容")
     template_block = _template_block(intent.template)

@@ -50,6 +50,12 @@ def create_podcast(body: PodcastCreate, db: DB, user: CurrentUser) -> PodcastCre
     host_a = _get_usable_host(db, body.host_a)
     host_b = _get_usable_host(db, body.host_b) if body.host_b else None
 
+    # query 重写前置到创建：标题/检索意图/模板在入库时就绪——
+    # 播客一出现就有标题，生成任务只消费这些参数（title/rag_query/template）
+    from app.services.podcast.query_understanding import understand_topic
+
+    intent = understand_topic(body.topic_prompt)
+
     p = Podcast(
         user_id=user.id,
         mode=body.mode,
@@ -62,6 +68,9 @@ def create_podcast(body: PodcastCreate, db: DB, user: CurrentUser) -> PodcastCre
         script_prompt_b=host_b.persona if body.mode == "dual" else None,
         # 主播名字快照（脚本生成时引用名字而非代号）
         host_names=[h.name for h in (host_a, host_b) if h],
+        # query 重写产物随创建落库（后续生成任务直接读取，不重复调用）
+        title=intent.title,
+        query_rewrite=intent.to_dict(),
     )
     db.add(p)
     db.commit()
