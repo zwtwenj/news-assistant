@@ -55,15 +55,28 @@ def synth_segment(text: str, voice_id: str) -> bytes:
     return wav
 
 
-def synth_all(segments: list[dict], voice_map: dict[str, str], out_dir: Path) -> list[Path]:
-    """逐段合成到 out_dir/seg_XXX.wav，返回文件列表（顺序）。"""
+# WAV 32000Hz 单声道 16bit：每秒 64000 字节（估算用；拼接阶段 ffprobe 精确值覆盖）
+_WAV_BYTES_PER_SEC = 32000 * 2
+
+
+def synth_all(
+    segments: list[dict], voice_map: dict[str, str], out_dir: Path
+) -> tuple[list[Path], int]:
+    """逐段合成到 out_dir/seg_XXX.wav。
+
+    返回 (文件列表, 估算总时长秒)——时长由 WAV 字节数估算（TTS 完成即可显示），
+    拼接阶段的 ffprobe 精确值随后覆盖。估算不含段间静音（0.4s/段），略偏小。
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     files: list[Path] = []
+    total_bytes = 0
     for i, seg in enumerate(segments, 1):
         voice = voice_map.get(seg.get("speaker", "single"), voice_map["single"])
         wav = synth_segment(seg["text"], voice)
         path = out_dir / f"seg_{i:03d}.wav"
         path.write_bytes(wav)
         files.append(path)
+        total_bytes += len(wav)
         logger.info("tts seg {}/{} ok voice={} bytes={}", i, len(segments), voice, len(wav))
-    return files
+    est_duration = int(total_bytes / _WAV_BYTES_PER_SEC)
+    return files, est_duration

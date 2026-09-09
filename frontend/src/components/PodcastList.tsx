@@ -448,6 +448,26 @@ export default function PodcastList() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 删除确认弹窗 */}
+      <Dialog open={deleting != null} onOpenChange={(open) => !open && setDeleting(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>删除这条播客？</DialogTitle>
+            <DialogDescription className="truncate">
+              「{deleting?.title || deleting?.topic_prompt}」删除后不可恢复。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleting(null)} disabled={deleteBusy}>
+              取消
+            </Button>
+            <Button variant="destructive" onClick={() => void confirmDelete()} disabled={deleteBusy}>
+              删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

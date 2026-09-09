@@ -88,13 +88,15 @@ def synth_tts(self, podcast_id: int) -> str:
         work_dir = _media_root() / "podcasts" / str(p.id)
         try:
             voice_map = speaker_voice_map(p.voice_a, p.voice_b)
-            tts_svc.synth_all(p.script, voice_map, work_dir)
+            _, est_duration = tts_svc.synth_all(p.script, voice_map, work_dir)
         except Exception as exc:  # noqa: BLE001
             _fail(db, p, f"TTS 合成失败: {exc}")
             return f"failed(podcast={podcast_id})"
+        # 合成完成即有时长（WAV 字节数估算）——列表无需等拼接播放；拼接后精确值覆盖
+        p.duration_sec = est_duration
         p.status = "composing"
         db.commit()
-        return f"tts ok(podcast={podcast_id})"
+        return f"tts ok(podcast={podcast_id}, est {est_duration}s)"
     finally:
         db.close()
 
