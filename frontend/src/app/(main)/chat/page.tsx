@@ -234,6 +234,7 @@ export default function ChatPage() {
             } else if (ev.type === "tool") {
               collectedTools.push({ name: ev.name, result: ev.result });
               meta.tool_calls = collectedTools;
+              if (ev.rag_sources) meta.rag_sources = ev.rag_sources;
               setToolEvents([...collectedTools]);
             } else if (ev.type === "error") {
               throw new Error(ev.message);

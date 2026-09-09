@@ -117,10 +117,6 @@ def chat(body: ChatRequest, user: CurrentUser) -> StreamingResponse:
                 "type": "meta",
                 "used_query": used_query,
                 "memories": [m["summary"] for m in memories],
-                "rag_sources": [
-                    {"title": s["title"], "url": s["url"], "score": s["rerank_score"]}
-                    for s in sources
-                ],
             })
 
             # ⑤ LLM 流式 + 工具循环
@@ -177,7 +173,13 @@ def chat(body: ChatRequest, user: CurrentUser) -> StreamingResponse:
                     except json.JSONDecodeError:
                         args = {}
                     result = tools_svc.execute_tool(c["name"], args, image_id=body.image_id)
-                    yield _sse({"type": "tool", "name": c["name"], "result": result})
+                    tool_event: dict = {"type": "tool", "name": c["name"], "result": result}
+                    if c["name"] == "search_news_library" and result.get("found"):
+                        tool_event["rag_sources"] = [
+                            {"title": r["title"], "url": r["url"], "score": r["score"]}
+                            for r in result["results"]
+                        ]
+                    yield _sse(tool_event)
                     msgs.append({
                         "role": "tool",
                         "tool_call_id": c["id"],

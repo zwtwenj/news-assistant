@@ -85,6 +85,27 @@ def list_today_news(page: int = 1, tag: str = "") -> dict:
     return {"page": page, "total": total, "has_more": has_more, "items": items}
 
 
+def search_news_library(query: str, top_k: int = 5) -> dict:
+    """新闻库语义检索（复用播客 RAG 链路：understand_topic→双路召回→rerank→回表）。"""
+    from app.services.chat import rag as rag_svc
+
+    sources = rag_svc.retrieve(query, top_k=top_k)
+    if not sources:
+        return {"found": False, "note": "新闻库中没有相关内容"}
+    return {
+        "found": True,
+        "results": [
+            {
+                "title": s["title"],
+                "url": s["url"],
+                "material": s["material"],
+                "score": s["rerank_score"],
+            }
+            for s in sources
+        ],
+    }
+
+
 def match_similar_tags(query: str) -> dict:
     """标签向量匹配：query 与词表标签余弦 ≥ 阈值的相似标签（复用播客检索的匹配器）。"""
     from app.services.news.vocabulary import match_tags
@@ -165,6 +186,25 @@ def analyze_image(image_id: str, question: str) -> dict:
 
 # ---------- schema 与分发 ----------
 
+SEARCH_NEWS_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "search_news_library",
+        "description": (
+            "在新闻库中按主题语义检索相关新闻（返回标题/正文节选/来源链接）。"
+            "用户询问某主题的相关报道、事件背景、新闻细节时使用；"
+            "只是想看最新新闻列表时用 list_today_news。结果要注明来源标题。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "检索主题，如'民营经济政策'"},
+            },
+            "required": ["query"],
+        },
+    },
+}
+
 TOOLS_SCHEMA = [
     {
         "type": "function",
@@ -206,6 +246,7 @@ TOOLS_SCHEMA = [
             },
         },
     },
+    SEARCH_NEWS_SCHEMA,
     {
         "type": "function",
         "function": {
@@ -244,6 +285,8 @@ def execute_tool(name: str, args: dict, image_id: str | None = None) -> dict:
     """统一分发。analyze_image 的 image_id 由请求注入（防并发串图）。"""
     if name == "list_today_news":
         return list_today_news(page=int(args.get("page", 1)), tag=str(args.get("tag", "")))
+    if name == "search_news_library":
+        return search_news_library(str(args.get("query", "")))
     if name == "match_similar_tags":
         return match_similar_tags(str(args.get("query", "")))
     if name == "web_search_news":
