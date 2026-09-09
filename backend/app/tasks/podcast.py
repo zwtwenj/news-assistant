@@ -49,6 +49,9 @@ def gen_script(self, podcast_id: int) -> str:
             result = script_svc.generate_script(
                 p.mode, p.topic_prompt, p.script_prompt, p.script_prompt_a, p.script_prompt_b,
                 target_minutes=p.target_minutes,
+                host_names=p.host_names,
+                # 标题优先用用户编辑的，其次 query 重写生成的（intent 落库后可用）
+                podcast_title=p.title or (p.query_rewrite or {}).get("title"),
             )
         except script_svc.ScriptError as exc:
             _fail(db, p, str(exc))  # 业务性失败（如素材不足）不重试

@@ -54,11 +54,15 @@ def _clean_content(text: str) -> str:
 
 SINGLE_PROMPT = """你是资深新闻节目撰稿人，为早间新闻电台写一期约 {minutes} 分钟的单人口播稿。
 
+【主播身份】
+你就是在为「{host_name}」写口播稿——以下是 TA 的人设，稿件语气要贴合这个人设。
+
 【风格与写法要求（脚本提示词）】
 {script_prompt}
 
-【本期主题（话题提示词）】
-{topic_prompt}
+【本期节目与主题】
+节目名称：《{podcast_title}》（开场可自然点题，但不要生硬念出节目名）
+本期主题（话题提示词）：{topic_prompt}
 
 【新闻素材】（全部事实必须出自以下素材，不得编造数字、引语或情节；素材不足预期就对已有内容深入展开，不要硬凑）
 {materials}
@@ -80,14 +84,18 @@ SINGLE_PROMPT = """你是资深新闻节目撰稿人，为早间新闻电台写�
 
 DUAL_PROMPT = """你是资深新闻节目撰稿人，为一期约 {minutes} 分钟的双人新闻对谈写对话稿。
 
+【主持人身份】
+主持人 A 是「{host_a_name}」，主持人 B 是「{host_b_name}」——以下是两人的人设，对话语气要各自贴合。
+
 【主持人 A 人设与写法（脚本提示词A）】
 {script_prompt_a}
 
 【主持人 B 人设与写法（脚本提示词B）】
 {script_prompt_b}
 
-【本期主题（话题提示词）】
-{topic_prompt}
+【本期节目与主题】
+节目名称：《{podcast_title}》（开场可自然点题，但不要生硬念出节目名）
+本期主题（话题提示词）：{topic_prompt}
 
 【新闻素材】（全部事实必须出自以下素材，不得编造数字、引语或情节；素材不足预期就深聊已有内容，不要硬凑）
 {materials}
@@ -99,8 +107,8 @@ DUAL_PROMPT = """你是资深新闻节目撰稿人，为一期约 {minutes} 分�
    提问必须指向具体信息，不问空泛问题；
 3. 信息优先：每轮对话都要让听众获得具体事实，禁止空转的寒暄与感慨；
 4. 共 {turns_min}~{turns_max} 轮，每句不超过 100 字，总量约 {minutes} 分钟（语速约 280 字/分钟）；
-5. speaker 只能是 "A" 或 "B"——注意 A/B 仅是分段标记，不是名字：
-   口播文本中禁止出现"A"或"B"字样，互相称呼用"主播""老师"等自然称呼或不称呼；
+5. speaker 只能是 "A" 或 "B"——注意 A/B 仅是分段标记：
+   口播文本中禁止出现"A"或"B"字样，互相称呼可直接用对方名字（{host_a_name}/{host_b_name}）或自然称呼；
 6. 只输出 JSON：{{"scratchpad": "要素梳理",
    "segments": [{{"speaker": "A", "text": "..."}}]}}"""
 
@@ -237,9 +245,14 @@ def generate_script(
     script_prompt_a: str | None,
     script_prompt_b: str | None,
     target_minutes: int = 4,
+    host_names: list[str] | None = None,
+    podcast_title: str | None = None,
 ) -> dict[str, Any]:
     """返回 {"segments": [...], "materials": [命中清单], "intent": 检索意图}。
 
+    host_names：主播名字快照（单人为 [A名]，双人为 [A名, B名]）——注入 prompt
+    让 LLM 知道在为谁写稿（语气贴合人设、双人可用名字互称）。
+    podcast_title：query 重写生成的节目名（开场点题用）。
     素材为 0 或输出非法时抛 ScriptError（任务层计失败）。
     """
     plan = _plan(target_minutes)
@@ -260,10 +273,15 @@ def generate_script(
         }
         for h in hits[: plan["top_k"]]
     ]
+    names = host_names or []
     common = {
         "minutes": target_minutes,
         "topic_prompt": topic_prompt,
         "materials": materials,
+        "podcast_title": podcast_title or topic_prompt[:20],
+        "host_name": names[0] if names else "新闻主播",
+        "host_a_name": names[0] if names else "主持人A",
+        "host_b_name": names[1] if len(names) > 1 else "主持人B",
     }
     if mode == "single":
         prompt = template_block + SINGLE_PROMPT.format(

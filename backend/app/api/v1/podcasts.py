@@ -60,6 +60,8 @@ def create_podcast(body: PodcastCreate, db: DB, user: CurrentUser) -> PodcastCre
         script_prompt=host_a.persona if body.mode == "single" else None,
         script_prompt_a=host_a.persona if body.mode == "dual" else None,
         script_prompt_b=host_b.persona if body.mode == "dual" else None,
+        # 主播名字快照（脚本生成时引用名字而非代号）
+        host_names=[h.name for h in (host_a, host_b) if h],
     )
     db.add(p)
     db.commit()
