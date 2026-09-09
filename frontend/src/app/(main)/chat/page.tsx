@@ -340,14 +340,16 @@ export default function ChatPage() {
               speaking={speaking}
               onFeedback={(tid, r) => void api("/chat/feedback", {
                 method: "POST",
-                body: JSON.stringify({ trace_id: tid, rating: r }),
+                body: JSON.stringify({ trace_id: tid, rating: r ?? 0, cancel: r == null }),
               }).then(() => {
                 setMessages((prev) =>
-                  prev.map((x) =>
-                    x.id === m.id
-                      ? { ...x, meta: { ...x.meta, feedback: r } }
-                      : x,
-                  ),
+                  prev.map((x) => {
+                    if (x.id !== m.id) return x;
+                    const meta = { ...x.meta };
+                    if (r == null) delete meta.feedback;
+                    else meta.feedback = r;
+                    return { ...x, meta };
+                  }),
                 );
               })}
             />
@@ -453,7 +455,7 @@ function MessageBubble({
   msg: StoredMessage;
   onSpeak: (t: string) => void;
   speaking: boolean;
-  onFeedback: (traceId: string, rating: 0 | 1) => void;
+  onFeedback: (traceId: string, rating: 0 | 1 | null) => void;
 }) {
   const [feedback, setFeedback] = useState<0 | 1 | null>(msg.meta?.feedback ?? null);
 
@@ -535,7 +537,7 @@ function MessageBubble({
                 <button
                   type="button"
                   disabled={feedback === 1}
-                  onClick={() => onFeedback(msg.meta!.trace_id!, 1)}
+                  onClick={() => onFeedback(msg.meta!.trace_id!, feedback === 1 ? null : 1)}
                   className={feedback === 1 ? "text-emerald-500" : "hover:text-emerald-500"}
                   title="有用"
                 >
@@ -544,7 +546,7 @@ function MessageBubble({
                 <button
                   type="button"
                   disabled={feedback === 0}
-                  onClick={() => onFeedback(msg.meta!.trace_id!, 0)}
+                  onClick={() => onFeedback(msg.meta!.trace_id!, feedback === 0 ? null : 0)}
                   className={feedback === 0 ? "text-red-500" : "hover:text-red-500"}
                   title="没用"
                 >

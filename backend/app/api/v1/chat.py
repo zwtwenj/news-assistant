@@ -351,7 +351,8 @@ def voice_output(body: TTSIn, user: CurrentUser) -> Response:
 
 class FeedbackIn(BaseModel):
     trace_id: str = Field(min_length=1)
-    rating: int = Field(ge=0, le=1)  # 1=👍 0=👎
+    rating: int | None = Field(default=None, ge=0, le=1)  # 1=👍 0=👎
+    cancel: bool = False  # true = 撤销评分（删除 Langfuse 上的 score 记录）
 
 
 @router.post("/feedback")
@@ -361,16 +362,34 @@ def chat_feedback(body: FeedbackIn, user: CurrentUser) -> dict:
     score_id 用 trace_id 派生（同一 trace 固定），重复提交即覆盖更新——
     用户可以反复改评分；数据始终保留在 Langfuse。
     """
+    from app.core.config import get_settings
     from app.services.observability.langfuse_client import get_langfuse
 
+    s = get_settings()
     lf = get_langfuse()
     if lf is None:
         raise HTTPException(status_code=502, detail="评分服务不可用")
+    score_id = f"score-{body.trace_id}"
+    if body.rating is None or body.cancel:
+        # 撤销：Langfuse 原生 DELETE /api/public/scores/{scoreId}（202 异步删除）
+        import base64
+        import urllib.request
+
+        basic = base64.b64encode(
+            f"{s.langfuse_public_key}:{s.langfuse_secret_key}".encode()
+        ).decode()
+        req = urllib.request.Request(
+            f"{s.langfuse_host.rstrip('/')}/api/public/scores/{score_id}",
+            method="DELETE",
+            headers={"Authorization": f"Basic {basic}"},
+        )
+        urllib.request.urlopen(req, timeout=15)
+        return {"status": "ok", "deleted": True}
     lf.api.scores.create(
         name="user_feedback",
         value=float(body.rating),
         trace_id=body.trace_id,
-        id=f"score-{body.trace_id}",  # 稳定 ID：同 trace 的评分 upsert
+        id=score_id,  # 稳定 ID：同 trace 的评分 upsert，重复提交即覆盖
         comment=f"user={user.viking_user_id or user.id}",
     )
     return {"status": "ok"}
