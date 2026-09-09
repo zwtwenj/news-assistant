@@ -1,4 +1,4 @@
-/** GitHub 品牌 mark（lucide 新版移除了品牌图标，此处内联官方 SVG path）。 */
+/** GitHub 品牌 mark（lucide 新版移除了品牌图标，内联官方 SVG path）。 */
 export default function GithubIcon({ className = "" }: { className?: string }) {
   return (
     <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" className={className}>

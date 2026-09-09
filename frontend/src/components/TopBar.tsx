@@ -1,6 +1,8 @@
 "use client";
 
 import { LogOut } from "lucide-react";
+
+import GithubIcon from "@/components/GithubIcon";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -34,6 +36,15 @@ export default function TopBar() {
                   ? `${user.phone.slice(0, 3)}****${user.phone.slice(-4)}`
                   : `@${user.github_login}`}
               </Link>
+              <a
+                href="https://github.com/zwtwenj/news-assistant"
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground"
+                title="GitHub 开源仓库"
+              >
+                <GithubIcon className="size-5" />
+              </a>
               <Button variant="outline" size="sm" onClick={() => void handleLogout()}>
                 <LogOut />
                 退出
