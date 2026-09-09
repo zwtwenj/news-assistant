@@ -9,6 +9,7 @@ import json
 
 from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
+from langfuse import observe
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -74,6 +75,7 @@ def _sse(event: dict) -> str:
 
 
 @router.post("")
+@observe()  # 每轮对话一条 trace：👍/👎 评分与 judge 评分都挂在这条 trace 上
 def chat(body: ChatRequest, user: CurrentUser) -> StreamingResponse:
     """SSE 流式对话。事件：meta(记忆+RAG来源+used_query) → delta → tool → done/error。"""
     _quota_check(user.id)
@@ -87,7 +89,7 @@ def chat(body: ChatRequest, user: CurrentUser) -> StreamingResponse:
         try:
             _quota_incr(user.id)
             # ① query 重写（指代消解）——重写结果同时用于 RAG 与记忆检索
-            used_query = rag_svc.rewrite_query(history, user_msg)
+            used_query, trace_id = rag_svc.rewrite_query(history, user_msg)
 
             # ② 记忆检索 + RAG（并行无依赖但顺序执行，两者互不阻断）
             memories = memory_svc.safe_search(used_query, user.viking_user_id)
@@ -196,7 +198,12 @@ def chat(body: ChatRequest, user: CurrentUser) -> StreamingResponse:
                     ],
                     user.viking_user_id,
                 )
-            yield _sse({"type": "done", "usage": usage, "answer_length": len(answer)})
+            yield _sse({
+                "type": "done",
+                "usage": usage,
+                "answer_length": len(answer),
+                "trace_id": trace_id,
+            })
         except Exception as exc:  # noqa: BLE001
             logger.opt(exception=True).error("chat stream error: {}", str(exc)[:120])
             yield _sse({"type": "error", "message": str(exc)[:300]})
@@ -340,3 +347,30 @@ def voice_output(body: TTSIn, user: CurrentUser) -> Response:
     if not audio_hex:
         raise HTTPException(status_code=502, detail="语音合成无音频")
     return Response(content=bytes.fromhex(audio_hex), media_type="audio/wav")
+
+
+class FeedbackIn(BaseModel):
+    trace_id: str = Field(min_length=1)
+    rating: int = Field(ge=0, le=1)  # 1=👍 0=👎
+
+
+@router.post("/feedback")
+def chat_feedback(body: FeedbackIn, user: CurrentUser) -> dict:
+    """用户对 AI 回答的 👍/👎 评分 → 挂到该轮对话的 Langfuse trace 上。
+
+    score_id 用 trace_id 派生（同一 trace 固定），重复提交即覆盖更新——
+    用户可以反复改评分；数据始终保留在 Langfuse。
+    """
+    from app.services.observability.langfuse_client import get_langfuse
+
+    lf = get_langfuse()
+    if lf is None:
+        raise HTTPException(status_code=502, detail="评分服务不可用")
+    lf.api.scores.create(
+        name="user_feedback",
+        value=float(body.rating),
+        trace_id=body.trace_id,
+        id=f"score-{body.trace_id}",  # 稳定 ID：同 trace 的评分 upsert
+        comment=f"user={user.viking_user_id or user.id}",
+    )
+    return {"status": "ok"}

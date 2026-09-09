@@ -530,30 +530,27 @@ function MessageBubble({
             >
               <Volume2 className="size-3.5" /> 播报
             </button>
-            {msg.meta?.trace_id && feedback === null && (
+            {msg.meta?.trace_id && (
               <>
                 <button
                   type="button"
+                  disabled={feedback === 1}
                   onClick={() => onFeedback(msg.meta!.trace_id!, 1)}
-                  className="hover:text-emerald-500"
+                  className={feedback === 1 ? "text-emerald-500" : "hover:text-emerald-500"}
                   title="有用"
                 >
                   <ThumbsUp className="size-3.5" />
                 </button>
                 <button
                   type="button"
+                  disabled={feedback === 0}
                   onClick={() => onFeedback(msg.meta!.trace_id!, 0)}
-                  className="hover:text-red-500"
+                  className={feedback === 0 ? "text-red-500" : "hover:text-red-500"}
                   title="没用"
                 >
                   <ThumbsDown className="size-3.5" />
                 </button>
               </>
-            )}
-            {msg.meta?.feedback != null && (
-              <span className={msg.meta.feedback ? "text-emerald-500" : "text-red-400"}>
-                {msg.meta.feedback ? "已标记有用" : "已标记无用"}
-              </span>
             )}
           </div>
         )}
