@@ -29,7 +29,12 @@ def news_stats(db: DB) -> dict:
     base = Article.deleted_at.is_(None)
 
     total = db.query(func.count(Article.id)).filter(base).scalar() or 0
-    feeds = db.query(func.count(Feed.id)).filter(Feed.enabled.is_(True)).scalar() or 0
+    feeds = (
+        db.query(func.count(Feed.id))
+        .filter(Feed.enabled.is_(True), Feed.deleted_at.is_(None))
+        .scalar()
+        or 0
+    )
 
     status_rows = (
         db.query(Article.fetch_status, func.count(Article.id))
