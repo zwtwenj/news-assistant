@@ -5,13 +5,12 @@
  * 交给后端换 token（Set-Cookie 本站会话）→ 成功后跳 next（state 中携带）。
  */
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
 
 import GithubIcon from "@/components/GithubIcon";
 import Spinner from "@/components/Spinner";
 import { ApiError, api } from "@/lib/api";
-import { useAuth } from "@/providers/auth";
 
 export default function GithubCallbackPage() {
   return (
@@ -28,9 +27,7 @@ export default function GithubCallbackPage() {
 }
 
 function CallbackInner() {
-  const router = useRouter();
   const searchParams = useSearchParams();
-  const { reload } = useAuth();
   const [error, setError] = useState("");
   const triedRef = useRef(false); // StrictMode 双挂载只换一次（code 一次性）
 
@@ -47,14 +44,16 @@ function CallbackInner() {
       method: "POST",
       body: JSON.stringify({ code, state }),
     })
-      .then(async (resp) => {
-        await reload();
-        router.push(resp.next && resp.next.startsWith("/") ? resp.next : "/");
+      .then((resp) => {
+        // 整页跳转（非 router.push）：OAuth 回调后需完整重载让 middleware 与
+        // AuthProvider 带着新 cookie 重新初始化，客户端路由可能出现不导航的竞态
+        const next = resp.next && resp.next.startsWith("/") ? resp.next : "/";
+        window.location.href = next;
       })
       .catch((e) => {
         setError(e instanceof ApiError ? e.message : "GitHub 登录失败，请重试");
       });
-  }, [reload, router, searchParams]);
+  }, [searchParams]);
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-zinc-50 px-4 dark:bg-black">
@@ -64,7 +63,7 @@ function CallbackInner() {
             <p className="text-sm text-red-600">{error}</p>
             <button
               type="button"
-              onClick={() => router.push("/login")}
+              onClick={() => (window.location.href = "/login")}
               className="w-full rounded-md bg-foreground py-2.5 font-medium text-background"
             >
               返回登录
