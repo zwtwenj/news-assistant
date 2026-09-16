@@ -40,16 +40,13 @@ def list_today_news(page: int = 1, tag: str = "") -> dict:
     """按日查 PG 新闻，分页 10 条/页。tag 可选精确过滤（jsonb 包含）。
 
     与标签匹配工具联动：LLM 先用 match_similar_tags 拿到相关标签，再以 tag 调本工具。
+    时间窗自适应：镜像源发布时间滞后一天（凌晨抓到的是前一天傍晚内容），
+    傍晚时 24h 窗口必然漏空——不足 3 条自动放宽到 72h，并把实际窗口返回给 LLM 如实描述。
     """
     page = max(1, page)
-    day_start = datetime.now(UTC) - timedelta(hours=24)
-    params: dict[str, Any] = {
-        "since": day_start, "limit": PAGE_SIZE, "offset": (page - 1) * PAGE_SIZE,
-    }
     tag_filter = ""
     if tag:
         tag_filter = "AND tags @> CAST(:tag AS jsonb)"
-        params["tag"] = f'["{tag}"]'
     sql = text(
         f"""
         SELECT id, title, url, source, tags, publish_time
@@ -67,9 +64,20 @@ def list_today_news(page: int = 1, tag: str = "") -> dict:
           AND publish_time >= :since {tag_filter}
         """
     )
-    with SessionLocal() as db:
-        total = db.execute(count_sql, params).scalar() or 0
-        rows = db.execute(sql, params).all()
+    total, window_hours = 0, 24
+    for window_hours in (24, 72):
+        params: dict[str, Any] = {
+            "since": datetime.now(UTC) - timedelta(hours=window_hours),
+            "limit": PAGE_SIZE,
+            "offset": (page - 1) * PAGE_SIZE,
+        }
+        if tag:
+            params["tag"] = f'["{tag}"]'
+        with SessionLocal() as db:
+            total = db.execute(count_sql, params).scalar() or 0
+            if total >= 3 or window_hours == 72:
+                rows = db.execute(sql, params).all()
+                break
     items = [
         {
             "id": r[0],
@@ -82,7 +90,13 @@ def list_today_news(page: int = 1, tag: str = "") -> dict:
         for r in rows
     ]
     has_more = page * PAGE_SIZE < total
-    return {"page": page, "total": total, "has_more": has_more, "items": items}
+    return {
+        "page": page,
+        "total": total,
+        "window_hours": window_hours,
+        "has_more": has_more,
+        "items": items,
+    }
 
 
 def search_news_library(query: str, top_k: int = 5) -> dict:
@@ -211,7 +225,8 @@ TOOLS_SCHEMA = [
         "function": {
             "name": "list_today_news",
             "description": (
-                "查询新闻库中最近 24 小时的新闻列表，每页 10 条。"
+                "查询新闻库中最近的新闻列表（24 小时窗口，条目不足自动放宽到 72 小时，"
+                "结果带 window_hours 字段，表述时按实际窗口说'最近24/72小时'），每页 10 条。"
                 "用户想看最新/今日新闻时使用；用户说'还有吗/继续'时传 page+1；"
                 "可以传 tag 只看某类新闻（需先用 match_similar_tags 获取合法标签）。"
             ),
