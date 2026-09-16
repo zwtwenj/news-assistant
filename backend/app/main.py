@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import Thread
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -14,6 +15,19 @@ from app.core.errcode import api_error_handler, validation_error_handler
 from app.core.logging import setup_logging
 
 setup_logging()
+
+
+def _warm_caches() -> None:
+    """后台预热进程内懒加载缓存：标签向量（防止重启后首个用户对话承担冷启动
+    卡顿）。失败记日志即可——首次请求时懒加载路径仍会兜底。"""
+    try:
+        from app.services.news import vocabulary
+
+        vocabulary.match_tags("预热")
+    except Exception:  # noqa: BLE001
+        from loguru import logger
+
+        logger.opt(exception=True).warning("startup warmup fail")
 
 
 def create_app() -> FastAPI:
@@ -41,6 +55,8 @@ def create_app() -> FastAPI:
     media_root = Path(settings.media_dir).resolve()
     media_root.mkdir(parents=True, exist_ok=True)
     app.mount("/media", StaticFiles(directory=str(media_root)), name="media")
+
+    Thread(target=_warm_caches, daemon=True, name="warmup").start()
     return app
 
 

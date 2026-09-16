@@ -1,7 +1,8 @@
-"""聊天专用 DeepSeek 流式客户端（stream + tools）。
+"""聊天专用流式客户端（stream + tools）。
 
 网关（gateway）不支持流式与 function calling，聊天链路独立直连；
-模型与网关注册一致（deepseek-v4-flash），凭据复用。
+凭据复用 zhipu（glm-4-flash 真流式：chunk 随生成渐进到达，且免费）。
+deepseek-v4-flash 上游为伪流式（完整生成后 0.5s 内一次性吐完），不用于聊天。
 """
 
 from functools import lru_cache
@@ -12,13 +13,13 @@ from openai import OpenAI
 
 from app.core.config import get_settings
 
-MODEL = "deepseek-v4-flash"
+MODEL = "glm-4-flash"
 
 
 @lru_cache
 def _client() -> OpenAI:
     s = get_settings()
-    return OpenAI(base_url=s.deepseek_base_url, api_key=s.deepseek_api_key, timeout=90)
+    return OpenAI(base_url=s.zhipu_base_url, api_key=s.zhipu_api_key, timeout=90)
 
 
 def stream_chat(

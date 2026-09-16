@@ -29,3 +29,4 @@ npm-debug.log*
 backend/media/
 plan.md
 docs/
+backend/data/

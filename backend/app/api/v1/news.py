@@ -98,6 +98,26 @@ def news_stats(db: DB) -> dict:
     }
 
 
+@router.get("/ticker")
+def news_ticker(db: DB, limit: int = Query(6, ge=1, le=10)) -> dict:
+    """登录页「实时热点」跑马灯：最新入库的 N 条新闻标题。公开接口（标题级公开信息）。
+
+    只取质检合格（与列表 quality=ok 同口径）的新闻，登录页不展示被拦截的内容。
+    """
+    rows = (
+        db.query(Article.title)
+        .filter(
+            Article.deleted_at.is_(None),
+            Article.fetch_status == "succeeded",
+            or_(Article.content_quality.is_(None), Article.content_quality != "bad"),
+        )
+        .order_by(Article.publish_time.desc().nulls_last(), Article.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return {"items": [r.title for r in rows]}
+
+
 @router.get("/articles")
 def list_articles(
     db: DB,

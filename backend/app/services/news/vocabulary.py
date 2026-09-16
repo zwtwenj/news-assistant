@@ -9,6 +9,9 @@ Redis JSON array 快照供高频读取（news 项目 db0；news-admin 直读 PG�
 """
 
 import json
+import pickle
+import threading
+from pathlib import Path
 
 import numpy as np
 from loguru import logger
@@ -22,10 +25,62 @@ from app.models.tag_word import TagWord
 REDIS_KEY = "news:tag_vocab"
 MAX_WORDS = 300  # 词表上限：满后 new_tags 丢弃只复用（防 prompt 注入撑爆）
 
+# 本地向量快照：PG 可能是远程库（237×1024 JSONB ≈ 8MB，慢链路拉取要分钟级），
+# 文件缓存让进程重启秒级预热。PG 仍是事实源——文件过期时 _ensure_vectors 只对
+# 缺失的词补算 embedding，正确性不受影响
+_CACHE_FILE = Path(__file__).resolve().parents[3] / "data" / "tag_vectors.pkl"
+
 # 标签向量缓存 {word: list[float]}：进程内存（300×1024×4B ≈ 1.2MB），
-# 持久化在 tag_words.embedding；词表生长时增量 embed，进程重启从 PG 加载
+# 持久化在 tag_words.embedding + 本地文件；词表生长时增量 embed
 _vectors: dict[str, list[float]] = {}
 _vectors_loaded = False
+_vectors_lock = threading.Lock()
+
+
+def _load_vectors() -> None:
+    """进程启动/首次使用时加载向量：本地文件秒级 → miss 回源 PG（慢链路兜底）并落文件。"""
+    global _vectors_loaded
+    if _vectors_loaded:
+        return
+    with _vectors_lock:
+        if _vectors_loaded:  # 双检：预热线程与首个请求并发时只加载一次
+            return
+        try:
+            if _CACHE_FILE.exists():
+                with _CACHE_FILE.open("rb") as f:
+                    cached = pickle.load(f)
+                if isinstance(cached, dict) and cached:
+                    _vectors.update(cached)
+                    _vectors_loaded = True
+                    logger.info("tag vectors loaded from file: {}", len(_vectors))
+                    return
+        except Exception:  # noqa: BLE001
+            logger.opt(exception=True).warning("tag vectors file cache read fail, fallback to pg")
+        try:
+            with SessionLocal() as db:
+                rows = db.execute(
+                    select(TagWord.word, TagWord.embedding).where(TagWord.embedding.is_not(None))
+                ).all()
+            _vectors.update({w: v for w, v in rows if v})
+            _vectors_loaded = True
+            logger.info("tag vectors loaded from pg: {}", len(_vectors))
+            _save_vectors_file()
+        except Exception:  # noqa: BLE001
+            logger.opt(exception=True).warning("tag vectors load fail")
+
+
+def _save_vectors_file() -> None:
+    """把内存向量写本地快照（tmp+replace 原子替换）；失败不影响主流程。"""
+    if not _vectors:
+        return
+    try:
+        _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _CACHE_FILE.with_suffix(".tmp")
+        with tmp.open("wb") as f:
+            pickle.dump(_vectors, f, protocol=pickle.HIGHEST_PROTOCOL)
+        tmp.replace(_CACHE_FILE)
+    except Exception:  # noqa: BLE001
+        logger.warning("tag vectors file cache write fail")
 
 
 def get_vocabulary() -> list[str]:
@@ -70,7 +125,7 @@ def add_new_tags(new_words: list[str]) -> list[str]:
         logger.opt(exception=True).warning("tag vocabulary pg write fail")
         return []
     _vectors.update({w: v for w, v in vectors.items() if v})
-    # 合并进词表缓存；缓存异常不阻塞——下次回源自愈
+    _save_vectors_file()
     try:
         cached = redis_client.get(REDIS_KEY)
         words = json.loads(cached) if cached else []
@@ -139,21 +194,6 @@ def match_tags(query: str, threshold: float | None = None) -> list[str]:
         return []
 
 
-def _load_vectors() -> None:
-    """进程启动/首次使用时从 PG 加载已有向量。"""
-    global _vectors_loaded
-    try:
-        with SessionLocal() as db:
-            rows = db.execute(
-                select(TagWord.word, TagWord.embedding).where(TagWord.embedding.is_not(None))
-            ).all()
-        _vectors.update({w: v for w, v in rows if v})
-        _vectors_loaded = True
-        logger.info("tag vectors loaded: {}", len(_vectors))
-    except Exception:  # noqa: BLE001
-        logger.opt(exception=True).warning("tag vectors load fail")
-
-
 def _ensure_vectors() -> None:
     """词表中尚无向量的标签批量补算（新 seed/迁移后冷启动一次）。"""
     words = [w for w in get_vocabulary() if w not in _vectors]
@@ -169,6 +209,7 @@ def _ensure_vectors() -> None:
             db.commit()
     except Exception:  # noqa: BLE001
         logger.warning("tag vectors persist fail")
+    _save_vectors_file()
     logger.info("tag vectors ensured: +{}", len(vectors))
 
 
