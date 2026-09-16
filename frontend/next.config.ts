@@ -5,6 +5,9 @@ const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8000";
 const nextConfig: NextConfig = {
   // 容器化运行（frontend/Dockerfile）依赖 standalone 产物；dev/start 不受影响
   output: "standalone",
+  // 关闭 Next 内置 gzip：压缩会缓冲 SSE 流（/chat 逐字输出被攒到最后一次性到达）。
+  // 生产压缩由 nginx 负责，且 nginx 默认不压缩 text/event-stream
+  compress: false,
   async rewrites() {
     // 前端统一请求 /api/*，由 Next.js 转发到后端，避免开发期 CORS 问题
     return [

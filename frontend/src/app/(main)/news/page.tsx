@@ -1,5 +1,6 @@
 "use client";
 
+import { Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import Spinner from "@/components/Spinner";
@@ -25,6 +26,19 @@ type ListResp = {
 };
 
 type TagItem = { tag: string; count: number };
+
+/* 标签 chips 按名称哈希取霓虹色，稳定且无需配置 */
+const CHIP_TONES = [
+  "border-primary/25 bg-primary/[.06] text-primary",
+  "border-[#a78bfa]/30 bg-[#a78bfa]/[.07] text-[#a78bfa]",
+  "border-emerald-400/30 bg-emerald-400/[.06] text-emerald-400",
+  "border-amber-400/30 bg-amber-400/[.06] text-amber-400",
+];
+const chipTone = (tag: string) => {
+  let h = 0;
+  for (const ch of tag) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return CHIP_TONES[h % CHIP_TONES.length];
+};
 
 export default function NewsListPage() {
   const [data, setData] = useState<ListResp | null>(null);
@@ -89,33 +103,41 @@ export default function NewsListPage() {
 
   return (
     <div className="flex h-[calc(100dvh-108px)] flex-col gap-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-xl font-semibold text-black dark:text-zinc-50">新闻列表</h1>
-        <span className="text-sm text-zinc-400">{data ? `共 ${data.total} 条` : ""}</span>
+      <div className="flex flex-wrap items-baseline gap-3">
+        <h1 className="text-2xl font-bold tracking-wide text-foreground">新闻列表</h1>
+        <span className="text-[13px] text-muted-foreground">
+          共 <b className="font-mono font-semibold text-primary">{data?.total ?? "—"}</b> 条 · 每页 15 条
+        </span>
       </div>
 
       {/* 搜索栏 */}
-      <div className="flex flex-wrap items-center gap-2">
-        <input
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && search()}
-          placeholder="搜索标题 / 正文关键词，回车搜索"
-          className="w-72 rounded-md border border-solid border-black/[.1] bg-white px-3 py-2 text-sm text-black outline-none focus:border-black dark:border-white/[.2] dark:bg-black dark:text-zinc-50 dark:focus:border-zinc-50"
-        />
+      <div className="flex flex-wrap items-center gap-2.5">
+        <div className="relative w-72">
+          <Search className="absolute top-2.5 left-3 size-4 text-zinc-600" />
+          <input
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && search()}
+            placeholder="搜索标题 / 正文关键词"
+            className="h-9.5 w-full rounded-lg border border-solid border-input bg-black/35 pr-14 pl-9 text-[13px] text-foreground outline-none transition-colors placeholder:text-zinc-600 focus:border-primary focus:ring-[3px] focus:ring-primary/15"
+          />
+          <span className="absolute top-2 right-2.5 rounded border border-solid border-border bg-white/[.03] px-1.5 py-0.5 text-[10px] text-zinc-600">
+            回车 ↵
+          </span>
+        </div>
         <button
           type="button"
           onClick={search}
-          className="rounded-md bg-foreground px-4 py-2 text-sm text-background"
+          className="h-9.5 rounded-lg border border-solid border-primary/30 bg-primary/[.12] px-5 text-[13px] font-semibold tracking-[0.2em] text-primary transition-colors hover:bg-primary/20"
         >
           搜索
         </button>
-        <label className="ml-2 flex cursor-pointer items-center gap-1.5 text-sm text-zinc-600 dark:text-zinc-400">
+        <label className="ml-2 flex cursor-pointer items-center gap-2 text-[13px] text-muted-foreground">
           <input
             type="checkbox"
             checked={showFailed}
             onChange={(e) => setQueryPart({ failed: e.target.checked })}
-            className="h-4 w-4 accent-foreground"
+            className="size-4 accent-primary"
           />
           查看质检不通过的新闻
         </label>
@@ -133,13 +155,15 @@ export default function NewsListPage() {
             }}
             onBlur={() => setTimeout(() => setTagOpen(false), 150)} // 等点选事件先触发
             placeholder={tag || "按标签筛选"}
-            className="w-44 rounded-md border border-solid border-black/[.1] bg-white px-3 py-2 text-sm text-black outline-none focus:border-black dark:border-white/[.2] dark:bg-black dark:text-zinc-50 dark:focus:border-zinc-50"
+            className={`h-9.5 w-44 rounded-lg border border-solid bg-black/35 px-3 text-[13px] outline-none transition-colors placeholder:text-zinc-600 focus:border-primary focus:ring-[3px] focus:ring-primary/15 ${
+              tag && !tagOpen ? "border-primary/40 text-primary" : "border-input text-foreground"
+            }`}
           />
           {tag && !tagOpen && (
             <button
               type="button"
               onClick={() => setQueryPart({ tag: "" })}
-              className="absolute top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+              className="absolute top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
               style={{ insetInlineEnd: 28 }}
               title="清除标签筛选"
             >
@@ -147,7 +171,7 @@ export default function NewsListPage() {
             </button>
           )}
           {tagOpen && (
-            <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-md border border-solid border-black/[.1] bg-white py-1 shadow-lg dark:border-white/[.2] dark:bg-zinc-950">
+            <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-solid border-border bg-popover py-1 shadow-2xl">
               {tag && (
                 <button
                   type="button"
@@ -155,7 +179,7 @@ export default function NewsListPage() {
                     setQueryPart({ tag: "" });
                     setTagOpen(false);
                   }}
-                  className="block w-full px-3 py-1.5 text-left text-sm text-zinc-500 hover:bg-black/[.04] dark:hover:bg-white/[.06]"
+                  className="block w-full px-3 py-1.5 text-left text-[13px] text-zinc-500 hover:bg-white/[.05]"
                 >
                   全部（清除筛选）
                 </button>
@@ -172,25 +196,34 @@ export default function NewsListPage() {
                     }}
                     className={
                       t.tag === tag
-                        ? "block w-full bg-black/[.05] px-3 py-1.5 text-left text-sm text-black dark:bg-white/[.1] dark:text-zinc-50"
-                        : "block w-full px-3 py-1.5 text-left text-sm text-zinc-600 hover:bg-black/[.04] dark:text-zinc-400 dark:hover:bg-white/[.06]"
+                        ? "block w-full bg-primary/10 px-3 py-1.5 text-left text-[13px] text-primary"
+                        : "block w-full px-3 py-1.5 text-left text-[13px] text-zinc-400 hover:bg-white/[.05]"
                     }
                   >
-                    {t.tag} <span className="text-xs text-zinc-400">({t.count})</span>
+                    {t.tag} <span className="font-mono text-xs text-zinc-600">({t.count})</span>
                   </button>
                 ))}
               {tagItems.filter((t) => !tagInput || t.tag.includes(tagInput)).length === 0 && (
-                <p className="px-3 py-2 text-sm text-zinc-400">无匹配标签</p>
+                <p className="px-3 py-2 text-[13px] text-zinc-500">无匹配标签</p>
               )}
             </div>
           )}
         </div>
       </div>
 
+      {/* 当前筛选状态行（无筛选时不占位） */}
+      {(tag || query.kw || showFailed) && (
+        <div className="-mt-2 flex gap-5 text-[11px] text-zinc-600">
+          {tag && <span className="text-primary">筛选：标签 = {tag}</span>}
+          {query.kw && <span>关键词：{query.kw}</span>}
+          {showFailed && <span className="text-amber-400">质检：仅看不通过</span>}
+        </div>
+      )}
+
       {/* 列表（滚动在列表内部，翻页/筛选后回到顶部；loading 覆盖不顶开） */}
       <div className="relative min-h-0 flex-1">
         {loading && data && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-zinc-50/60 backdrop-blur-[1px] dark:bg-black/60">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/60 backdrop-blur-[2px]">
             <Spinner label="正在更新…" />
           </div>
         )}
@@ -199,13 +232,13 @@ export default function NewsListPage() {
             <Spinner />
           </div>
         )}
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-red-400">{error}</p>}
         {!loading && data && data.items.length === 0 && (
-          <p className="py-16 text-center text-sm text-zinc-400">
+          <p className="py-16 text-center text-sm text-muted-foreground">
             {showFailed ? "没有质检不通过的新闻" : "没有匹配的新闻"}
           </p>
         )}
-        <div ref={listRef} className="h-full space-y-3 overflow-y-auto pr-1">
+        <div ref={listRef} className="h-full space-y-2.5 overflow-y-auto pr-1">
         {data?.items.map((a) => (
           <a
             key={a.id}
@@ -214,31 +247,34 @@ export default function NewsListPage() {
             rel="noopener noreferrer"
             className={
               showFailed
-                ? "block rounded-lg border border-solid border-red-200 bg-white p-4 dark:border-red-900/50 dark:bg-black"
-                : "block rounded-lg border border-solid border-black/[.06] bg-white p-4 transition-colors hover:border-black/[.2] dark:border-white/[.12] dark:bg-black dark:hover:border-white/[.3]"
+                ? "group block rounded-xl border border-solid border-destructive/30 bg-destructive/[.04] p-4 transition-colors hover:border-destructive/50"
+                : "group block rounded-xl border border-solid border-border bg-white/[.04] p-4 transition-all hover:border-primary/35 hover:shadow-[0_0_20px_rgba(34,211,238,.07)]"
             }
           >
-            <div className="flex items-start justify-between gap-4">
-              <h2 className="font-medium text-black dark:text-zinc-50">{a.title}</h2>
-              <span className="shrink-0 text-xs text-zinc-400">{a.publish_time}</span>
+            <div className="flex items-baseline justify-between gap-4">
+              <h2 className="truncate font-medium text-zinc-100">{a.title}</h2>
+              <span className="shrink-0 font-mono text-[11px] text-zinc-600">{a.publish_time}</span>
             </div>
             {showFailed && (
-              <p className="mt-1.5 rounded bg-red-50 px-2 py-1 text-xs text-red-600 dark:bg-red-950/40 dark:text-red-400">
+              <p className="mt-1.5 rounded bg-destructive/10 px-2 py-1 text-xs text-red-300">
                 {a.content_quality === "bad" ? "语义/规则质检不通过" : "抓取/判重未通过"}
                 {a.fail_reason ? `：${a.fail_reason}` : ""}
               </p>
             )}
-            <p className="mt-1 line-clamp-2 text-sm text-zinc-500 dark:text-zinc-400">{a.summary}</p>
+            <p className="mt-1 line-clamp-2 text-[13px] leading-relaxed text-muted-foreground">{a.summary}</p>
             <div className="mt-2 flex items-center gap-2">
-              <span className="text-xs text-zinc-400">{a.source}</span>
+              <span className="text-[11px] text-zinc-600">{a.source}</span>
               {a.tags.map((t) => (
                 <span
                   key={t}
-                  className="rounded-full bg-black/[.05] px-2 py-0.5 text-xs text-zinc-600 dark:bg-white/[.1] dark:text-zinc-300"
+                  className={`rounded-full border border-solid px-2 py-0.5 text-[10.5px] ${chipTone(t)}`}
                 >
                   {t}
                 </span>
               ))}
+              <span className="ml-auto text-[11px] text-zinc-600 opacity-0 transition-opacity group-hover:text-primary group-hover:opacity-100">
+                打开原文 ↗
+              </span>
             </div>
           </a>
         ))}
@@ -252,20 +288,20 @@ export default function NewsListPage() {
             type="button"
             disabled={page <= 1}
             onClick={() => setQuery((q) => ({ ...q, page: q.page - 1, seq: q.seq + 1 }))}
-            className="rounded-md border border-solid border-black/[.1] px-3 py-1.5 disabled:opacity-40 dark:border-white/[.2]"
+            className="rounded-lg border border-solid border-border bg-white/[.03] px-3.5 py-1.5 text-[13px] text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-35 disabled:hover:border-border disabled:hover:text-muted-foreground"
           >
-            上一页
+            ← 上一页
           </button>
-          <span className="text-zinc-500">
-            {page} / {totalPages}
+          <span className="text-[13px] text-muted-foreground">
+            第 <b className="font-mono font-semibold text-primary">{page}</b> / {totalPages} 页
           </span>
           <button
             type="button"
             disabled={page >= totalPages}
             onClick={() => setQuery((q) => ({ ...q, page: q.page + 1, seq: q.seq + 1 }))}
-            className="rounded-md border border-solid border-black/[.1] px-3 py-1.5 disabled:opacity-40 dark:border-white/[.2]"
+            className="rounded-lg border border-solid border-border bg-white/[.03] px-3.5 py-1.5 text-[13px] text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-35 disabled:hover:border-border disabled:hover:text-muted-foreground"
           >
-            下一页
+            下一页 →
           </button>
         </div>
       )}

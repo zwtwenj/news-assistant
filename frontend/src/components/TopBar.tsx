@@ -1,13 +1,9 @@
 "use client";
 
-import { LogOut } from "lucide-react";
-
+import { useAuth } from "@/providers/auth";
 import GithubIcon from "@/components/GithubIcon";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-
-import { Button } from "@/components/ui/button";
-import { useAuth } from "@/providers/auth";
 
 export default function TopBar() {
   const { user, loading, logout } = useAuth();
@@ -19,18 +15,25 @@ export default function TopBar() {
   };
 
   return (
-    <header className="sticky top-0 z-10 border-b border-solid border-border bg-card">
-      <div className="flex w-full items-center justify-between px-6 py-3">
-        <Link href="/" className="text-lg font-semibold text-foreground">
-          新闻助手
+    <header className="sticky top-0 z-20 border-b border-solid border-border bg-card/80 backdrop-blur-md">
+      <div className="flex w-full items-center justify-between px-7 py-2.5">
+        <Link
+          href="/"
+          className="text-[15px] font-semibold tracking-wide text-foreground"
+        >
+          新闻助手<span className="animate-pulse text-primary">_</span>
         </Link>
-        <div className="flex items-center gap-4 text-sm">
-          {loading && <span className="text-muted-foreground">…</span>}
+        <div className="flex items-center gap-5 text-xs text-muted-foreground">
+          {loading && <span>…</span>}
           {!loading && user && (
             <>
+              <span className="flex items-center gap-1.5 text-emerald-400">
+                <span className="text-[8px] leading-none">●</span>
+                系统在线
+              </span>
               <Link
                 href="/account"
-                className="text-muted-foreground transition-colors hover:text-foreground"
+                className="transition-colors hover:text-foreground"
               >
                 {user.phone
                   ? `${user.phone.slice(0, 3)}****${user.phone.slice(-4)}`
@@ -40,20 +43,27 @@ export default function TopBar() {
                 href="https://github.com/zwtwenj/news-assistant"
                 target="_blank"
                 rel="noreferrer"
-                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground"
+                className="flex items-center gap-1.5 transition-colors hover:text-foreground"
                 title="GitHub 开源仓库"
               >
-                <GithubIcon className="size-5" />
+                <GithubIcon className="size-3.5" />
+                GitHub 仓库
               </a>
-              <Button variant="outline" size="sm" onClick={() => void handleLogout()}>
-                <LogOut />
+              <button
+                type="button"
+                onClick={() => void handleLogout()}
+                className="transition-colors hover:text-foreground"
+              >
                 退出
-              </Button>
+              </button>
             </>
           )}
           {!loading && !user && (
-            <Link href="/login">
-              <Button size="sm">登录</Button>
+            <Link
+              href="/login"
+              className="rounded-md border border-border bg-white/[.04] px-3.5 py-1.5 transition-colors hover:border-primary/40 hover:text-primary"
+            >
+              登录
             </Link>
           )}
         </div>

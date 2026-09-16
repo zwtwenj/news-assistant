@@ -2,6 +2,9 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/* 强制深色：dark: 前缀改为类策略（html.dark），主题不再跟随系统 */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -46,86 +49,109 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-:root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+/*
+ * Cyber 设计 tokens（全站唯一主题，无亮色变体）
+ * 设计稿基准：websense-poc/designs/*_cyber.html
+ * 底色 #0A0A0C · 霓虹青 #22D3EE · 电紫 #A78BFA · 面板 = 白 4% 玻璃
+ */
+:root,
+.dark {
+  --background: #0a0a0c;
+  --foreground: #e4e4e7;
+  --card: #121216;
+  --card-foreground: #e4e4e7;
+  --popover: #16161b;
+  --popover-foreground: #e4e4e7;
+  --primary: #22d3ee;
+  --primary-foreground: #001318;
+  --secondary: #1b1b20;
+  --secondary-foreground: #e4e4e7;
+  --muted: #1b1b20;
+  --muted-foreground: #71717a;
+  --accent: #17272b;
+  --accent-foreground: #67e8f9;
+  --destructive: #f87171;
+  --border: rgba(255, 255, 255, 0.09);
+  --input: rgba(255, 255, 255, 0.12);
+  --ring: #22d3ee;
+  --chart-1: #22d3ee;
+  --chart-2: #a78bfa;
+  --chart-3: #34d399;
+  --chart-4: #f472b6;
+  --chart-5: #fbbf24;
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
-
-/* 暗色跟随系统（与项目 dark: 前缀的 media 策略一致），shadcn 组件的 CSS vars 同步切换 */
-@media (prefers-color-scheme: dark) {
-  :root {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
-  }
+  --sidebar: #0c0c0f;
+  --sidebar-foreground: #e4e4e7;
+  --sidebar-primary: #22d3ee;
+  --sidebar-primary-foreground: #001318;
+  --sidebar-accent: rgba(34, 211, 238, 0.08);
+  --sidebar-accent-foreground: #22d3ee;
+  --sidebar-border: rgba(255, 255, 255, 0.09);
+  --sidebar-ring: #22d3ee;
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
-  body {
-    @apply bg-background text-foreground;
-  }
   html {
     @apply font-sans;
   }
+  body {
+    @apply text-foreground;
+    background-color: var(--background);
+    /* 全局底纹：顶部青色氛围光 + 48px 网格（低透不抢内容） */
+    background-image:
+      radial-gradient(ellipse 90% 55% at 50% -10%, rgba(34, 211, 238, 0.06), transparent 62%),
+      radial-gradient(ellipse 60% 45% at 100% 110%, rgba(167, 139, 250, 0.05), transparent 62%),
+      linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 48px 48px, 48px 48px;
+    background-attachment: fixed;
+  }
+}
+
+/* 玻璃面板：页面内卡片统一质感（配合 bg-card 使用） */
+.glass {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(10px);
+}
+
+/* 登录页实时热点跑马灯：内容渲染两份，平移 50% 实现无缝循环 */
+@keyframes ticker-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+.ticker-track {
+  display: inline-flex;
+  white-space: nowrap;
+  animation: ticker-scroll 45s linear infinite;
+}
+
+/* 深色滚动条：细轨 + 半透明把手（Firefox 用 scrollbar-*，WebKit 用伪元素） */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(34, 211, 238, 0.45);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
