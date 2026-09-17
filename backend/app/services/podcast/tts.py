@@ -1,6 +1,7 @@
 """MiniMax TTS 分段合成（参数沿用 demo 实测：speech-02-turbo / t2a_v2 / hex wav）。"""
 
 from pathlib import Path
+from typing import Any
 
 import httpx
 from loguru import logger
@@ -60,7 +61,10 @@ _WAV_BYTES_PER_SEC = 32000 * 2
 
 
 def synth_all(
-    segments: list[dict], voice_map: dict[str, str], out_dir: Path
+    segments: list[dict],
+    voice_map: dict[str, str],
+    out_dir: Path,
+    on_progress: Any = None,  # callback(done, total)：供上层写分段进度供前端轮询
 ) -> tuple[list[Path], int]:
     """逐段合成到 out_dir/seg_XXX.wav。
 
@@ -77,6 +81,8 @@ def synth_all(
         path.write_bytes(wav)
         files.append(path)
         total_bytes += len(wav)
+        if on_progress:
+            on_progress(i, len(segments))
         logger.info("tts seg {}/{} ok voice={} bytes={}", i, len(segments), voice, len(wav))
     est_duration = int(total_bytes / _WAV_BYTES_PER_SEC)
     return files, est_duration

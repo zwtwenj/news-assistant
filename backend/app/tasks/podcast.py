@@ -11,6 +11,7 @@ from celery import Task, chain
 from loguru import logger
 
 from app.core.config import get_settings
+from app.core.redis_client import redis_client
 from app.db.session import SessionLocal
 from app.models.podcast import Podcast
 from app.services.podcast import compose as compose_svc
@@ -88,7 +89,14 @@ def synth_tts(self, podcast_id: int) -> str:
         work_dir = _media_root() / "podcasts" / str(p.id)
         try:
             voice_map = speaker_voice_map(p.voice_a, p.voice_b)
-            _, est_duration = tts_svc.synth_all(p.script, voice_map, work_dir)
+
+            def _tts_progress(done: int, total: int) -> None:
+                # 分段进度写 Redis（TTL 兜底），前端 5s 轮询列表时展示「12/23 段」
+                redis_client.set(f"podcast:tts:{podcast_id}", f"{done}/{total}", ex=3600)
+
+            _, est_duration = tts_svc.synth_all(
+                p.script, voice_map, work_dir, on_progress=_tts_progress
+            )
         except Exception as exc:  # noqa: BLE001
             _fail(db, p, f"TTS 合成失败: {exc}")
             return f"failed(podcast={podcast_id})"

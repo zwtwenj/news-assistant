@@ -108,16 +108,23 @@ def list_podcasts(
         .limit(page_size)
         .all()
     )
+    items = []
+    for r in rows:
+        item = PodcastOut.model_validate(
+            {**r.__dict__, "script": None}  # 列表不带脚本正文
+        ).model_dump(exclude={"script"})
+        # TTS 分段进度（synth 阶段逐段写 Redis），前端展示「正在合成语音 12/23 段…」
+        if item["status"] == "synthesizing":
+            prog = redis_client.get(f"podcast:tts:{r.id}")
+            if prog:
+                item["tts_progress"] = prog.decode() if isinstance(prog, bytes) else prog
+        items.append(item)
+
     return {
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": [
-            PodcastOut.model_validate(
-                {**r.__dict__, "script": None}  # 列表不带脚本正文
-            ).model_dump(exclude={"script"})
-            for r in rows
-        ],
+        "items": items,
     }
 
 

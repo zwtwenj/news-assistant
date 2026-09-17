@@ -7,11 +7,10 @@
  * - 暗色：创建时按当前主题读一次 CSS 变量（主题切换后下次播放生效，可接受）
  */
 
-import { Pause, Play } from "lucide-react";
+import { Loader2, Pause, Play } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import WaveSurfer from "wavesurfer.js";
 
-import Spinner from "@/components/Spinner";
 import { cn } from "@/lib/utils";
 
 let activePause: (() => void) | null = null;
@@ -85,14 +84,14 @@ export function AudioPlayer({ src, className }: { src: string; className?: strin
         type="button"
         aria-label={playing ? "暂停" : "播放"}
         onClick={toggle}
-        className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform hover:scale-105 active:scale-95"
+        className="flex size-7 shrink-0 items-center justify-center rounded-full border border-solid border-primary/45 bg-transparent text-primary transition-colors hover:bg-primary/10"
       >
         {loading ? (
-          <Spinner className="border-primary/30 border-t-primary-foreground size-4" />
+          <Loader2 className="size-3.5 animate-spin" />
         ) : playing ? (
-          <Pause className="size-4 fill-current" />
+          <Pause className="size-3.5 fill-current" />
         ) : (
-          <Play className="size-4 translate-x-px fill-current" />
+          <Play className="size-3.5 translate-x-px fill-current" />
         )}
       </button>
       {/* 未创建实例前的波形占位（懒加载：点播放才拉音频） */}

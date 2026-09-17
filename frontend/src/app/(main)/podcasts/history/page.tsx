@@ -1,17 +1,6 @@
 import PodcastList from "@/components/PodcastList";
-import RssFeedCard from "@/components/RssFeedCard";
 
 export default function PodcastHistoryPage() {
-  return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold text-black dark:text-zinc-50">我的播客</h1>
-        <p className="mt-1 text-sm text-zinc-500">
-          点击「开始生成」即入库排队；生成中与失败的条目也会保留在列表
-        </p>
-      </div>
-      <RssFeedCard />
-      <PodcastList />
-    </div>
-  );
+  // 页头/标题/RSS 弹层已内聚到 PodcastList（设计稿：history_blind_v2）
+  return <PodcastList />;
 }
