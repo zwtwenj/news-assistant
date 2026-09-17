@@ -82,9 +82,41 @@ def news_stats(db: DB) -> dict:
             dt = dt.replace(tzinfo=UTC)
         return dt.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
 
+    # per-feed 统计：数据总览的源明细表（名称/启用/最后抓取/本批入库/累计/代表性来源值）
+    by_feed_rows = db.execute(
+        text(
+            """
+            SELECT f.id, f.name, f.enabled, f.last_fetched_at,
+                   COUNT(a.id) AS total,
+                   COUNT(a.id) FILTER (WHERE
+                     (a.created_at AT TIME ZONE 'Asia/Shanghai')::date
+                     = (now() AT TIME ZONE 'Asia/Shanghai')::date) AS today,
+                   MAX(a.source) AS sample_source
+            FROM feeds f
+            LEFT JOIN articles a ON a.feed_id = f.id AND a.deleted_at IS NULL
+            WHERE f.deleted_at IS NULL AND f.enabled
+            GROUP BY f.id, f.name, f.enabled, f.last_fetched_at
+            ORDER BY total DESC
+            """
+        )
+    ).all()
+
     return {
         "total": total,
         "feeds": feeds,
+        "by_feed": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "enabled": r.enabled,
+                "last_fetched_at": _fmt(r.last_fetched_at),
+                "today": r.today,
+                "total": r.total,
+                # 代表性来源值：跳转新闻列表按 source 精确筛选用
+                "sample_source": r.sample_source,
+            }
+            for r in by_feed_rows
+        ],
         "fetch": {
             "succeeded": fetch_stats.get("succeeded", 0),
             "skipped": fetch_stats.get("skipped", 0),
@@ -126,6 +158,7 @@ def list_articles(
     page_size: int = Query(20, ge=1, le=100),
     keyword: str = Query("", max_length=100),
     tag: str = Query("", max_length=50),
+    source: str = Query("", max_length=200),
     quality: str = Query("ok", pattern="^(ok|bad)$"),  # ok=合格新闻 / bad=质检拦截区
 ) -> dict:
     """新闻列表：分页 + 关键词模糊搜索（标题/正文）+ 标签精确筛选，按发布时间倒序。
@@ -151,6 +184,8 @@ def list_articles(
         q = q.filter(or_(Article.title.ilike(like), Article.content.ilike(like)))
     if tag.strip():
         q = q.filter(Article.tags.contains([tag.strip()]))  # jsonb @> 精确包含
+    if source.strip():
+        q = q.filter(Article.source == source.strip())  # 数据总览源明细表跳转用
     total = q.count()
     # 列表只取展示所需列：摘要在 SQL 侧 coalesce+left 截断，
     # 不传输整列正文（跨境带宽下 20 篇全文 ~24KB 是数秒级开销）

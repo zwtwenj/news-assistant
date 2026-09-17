@@ -1,7 +1,8 @@
 "use client";
 
 import { Search } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 import Spinner from "@/components/Spinner";
 import { api } from "@/lib/api";
@@ -41,6 +42,15 @@ const chipTone = (tag: string) => {
 };
 
 export default function NewsListPage() {
+  // useSearchParams 需要 Suspense 边界（Next 静态预渲染约束）
+  return (
+    <Suspense fallback={null}>
+      <NewsListInner />
+    </Suspense>
+  );
+}
+
+function NewsListInner() {
   const [data, setData] = useState<ListResp | null>(null);
   const [keyword, setKeyword] = useState(""); // 输入草稿，回车/点搜索才提交到查询
   const [loading, setLoading] = useState(true);
@@ -49,8 +59,16 @@ export default function NewsListPage() {
   const [tagItems, setTagItems] = useState<TagItem[]>([]);
   const [tagInput, setTagInput] = useState(""); // 下拉框输入草稿（过滤用）
   const [tagOpen, setTagOpen] = useState(false);
-  // 查询态：仅在用户动作（搜索/切标签/翻页/切拦截区）时整体变更，effect 只依赖它 → 每动作恰好一次请求
-  const [query, setQuery] = useState({ page: 1, kw: "", tag: "", failed: false, seq: 0 });
+  const searchParams = useSearchParams();
+  // 查询态：初始值从 URL 参数读取（数据总览跳转 ?failed=1 / ?source=xxx），首次请求即已筛选
+  const [query, setQuery] = useState(() => ({
+    page: 1,
+    kw: "",
+    tag: "",
+    source: searchParams.get("source") ?? "",
+    failed: searchParams.get("failed") === "1",
+    seq: 0,
+  }));
   const seqRef = useRef(0); // 响应序号：仅接受最新一次（丢弃过期响应）
   const listRef = useRef<HTMLDivElement>(null); // 列表滚动容器（翻页回顶）
 
@@ -79,6 +97,7 @@ export default function NewsListPage() {
       });
       if (query.kw.trim()) params.set("keyword", query.kw.trim());
       if (query.tag) params.set("tag", query.tag);
+      if (query.source) params.set("source", query.source);
       api<ListResp>(`/news/articles?${params}`)
         .then((d) => {
           if (seq === seqRef.current) setData(d);
@@ -212,9 +231,10 @@ export default function NewsListPage() {
       </div>
 
       {/* 当前筛选状态行（无筛选时不占位） */}
-      {(tag || query.kw || showFailed) && (
+      {(tag || query.kw || showFailed || query.source) && (
         <div className="-mt-2 flex gap-5 text-[11px] text-zinc-600">
           {tag && <span className="text-primary">筛选：标签 = {tag}</span>}
+          {query.source && <span>来源：{query.source}</span>}
           {query.kw && <span>关键词：{query.kw}</span>}
           {showFailed && <span className="text-amber-400">质检：仅看不通过</span>}
         </div>

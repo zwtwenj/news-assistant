@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   Bar,
@@ -13,6 +14,7 @@ import {
   YAxis,
 } from "recharts";
 
+import Spinner from "@/components/Spinner";
 import { api } from "@/lib/api";
 
 type Stats = {
@@ -23,6 +25,15 @@ type Stats = {
   last_fetched_at: string | null;
   by_day: { date: string; count: number }[];
   by_category: { tag: string; count: number }[];
+  by_feed: {
+    id: number;
+    name: string;
+    enabled: boolean;
+    last_fetched_at: string | null;
+    today: number;
+    total: number;
+    sample_source: string | null;
+  }[];
 };
 
 /* 霓虹色板：青为主，紫/绿/粉/黄交替，超出的用灰 */
@@ -43,6 +54,7 @@ const TOOLTIP_ITEM = { color: "#e4e4e7" } as const;
 const TOOLTIP_LABEL = { color: "#a1a1aa" } as const;
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [stats, setStats] = useState<Stats | null>(null);
   const [error, setError] = useState("");
 
@@ -59,71 +71,83 @@ export default function DashboardPage() {
     return <p className="text-sm text-red-400">统计加载失败：{error}</p>;
   }
   if (!stats) {
-    return <p className="text-sm text-muted-foreground">加载中…</p>;
+    // 页面级加载：垂直居中并放大一档
+    return (
+      <div className="flex h-[70vh] items-center justify-center">
+        <Spinner label="数据同步中" className="scale-150" />
+      </div>
+    );
   }
 
-  const cards: { label: string; value: string; hint?: string; tone?: string }[] = [
-    { label: "文章总数", value: String(stats.total), tone: "text-primary", hint: "全部收录" },
-    { label: "已入库", value: String(stats.fetch.succeeded), tone: "text-emerald-400", hint: "完成全流程" },
-    { label: "内容判重", value: String(stats.fetch.skipped), tone: "text-[#a78bfa]", hint: "SimHash 命中" },
-    {
-      label: "待处理/失败",
-      value: String(stats.fetch.pending + stats.fetch.failed),
-      tone: "text-amber-400",
-      hint: "次日自动补偿",
-    },
-    { label: "数据源", value: String(stats.feeds), hint: "启用中" },
-    {
-      label: "最后更新",
-      value: stats.last_updated_at?.slice(11) ?? "-",
-      hint: stats.last_updated_at?.slice(0, 10),
-    },
-  ];
-
-  const dayData = stats.by_day.map((d) => ({
-    ...d,
-    day: d.date.slice(5), // MM-DD
-  }));
+  const retryCount = stats.fetch.pending + stats.fetch.failed;
+  const dayData = stats.by_day.map((d) => ({ ...d, day: d.date.slice(5) }));
   const maxDay = Math.max(...dayData.map((d) => d.count), 0);
+  const tagged = stats.by_category.reduce((s, c) => s + c.count, 0);
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
-        <h1 className="text-2xl font-bold tracking-wide text-foreground">数据总览</h1>
-        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          采集<span className="font-mono text-primary">→</span>
-          抓取<span className="font-mono text-primary">→</span>
-          打标<span className="font-mono text-primary">→</span>
-          向量化
-        </span>
-        <span className="ml-auto rounded-md border border-solid border-emerald-400/30 bg-emerald-400/[.07] px-3 py-1 text-[11px] text-emerald-400">
-          每日 <b className="font-mono">02:00</b> 自动运行
-        </span>
-      </div>
-
-      {/* 指标卡片 */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-        {cards.map((c) => (
-          <div
-            key={c.label}
-            className="rounded-xl border border-solid border-border bg-white/[.04] px-4 py-3.5"
+    <div className="space-y-4">
+      {/* 行动警示条：唯一需要"行动吗"判断的信号，无待处理时隐藏 */}
+      {retryCount > 0 && (
+        <div className="flex items-center gap-3 rounded-xl border border-solid border-amber-400/30 bg-amber-400/[.06] px-4 py-2.5 text-[12.5px] text-amber-400">
+          <span>⚠</span>
+          <span>
+            昨日 <b className="font-mono font-bold">{retryCount}</b> 条待处理/失败，将在下一轮流水线自动补偿重试
+          </span>
+          <button
+            type="button"
+            onClick={() => router.push("/news?failed=1")}
+            className="ml-auto rounded-md border border-solid border-amber-400/35 px-3 py-1 text-[11.5px] transition-colors hover:bg-amber-400/10"
           >
-            <p className="text-xs text-muted-foreground">{c.label}</p>
-            <p
-              className={`mt-1.5 font-mono text-[26px] font-bold leading-none tracking-wide ${
-                c.tone ?? "text-foreground"
-              }`}
-            >
-              {c.value}
-            </p>
-            {c.hint && <p className="mt-1.5 text-[11px] text-zinc-400">{c.hint}</p>}
-          </div>
-        ))}
+            查看失败明细
+          </button>
+        </div>
+      )}
+
+      <div className="flex items-center gap-4">
+        <h1 className="text-2xl font-bold tracking-wide text-foreground">数据总览</h1>
+        {stats.last_updated_at && (
+          <span className="rounded-md border border-solid border-emerald-400/30 bg-emerald-400/[.06] px-3 py-1 text-[11.5px] text-emerald-400">
+            最后更新 <b className="font-mono">{stats.last_updated_at}</b>
+          </span>
+        )}
       </div>
 
-      {/* 图表 */}
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
-        <div className="rounded-xl border border-solid border-border bg-white/[.04] p-5 xl:col-span-2">
+      {/* 管道即界面：数字住在流程节点里 */}
+      <div className="grid grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] items-stretch gap-x-2">
+        <div className="rounded-2xl border border-solid border-border bg-white/[.04] px-5 py-4">
+          <p className="font-mono text-[10.5px] tracking-[2px] text-zinc-600">01 · INGEST</p>
+          <p className="mt-2.5 text-[13px] text-muted-foreground">数据源采集</p>
+          <p className="mt-1 font-mono text-[34px] font-bold leading-none text-primary">{stats.feeds}</p>
+          <p className="mt-1.5 text-[11px] text-zinc-500">全部启用中</p>
+        </div>
+        <div className="flex items-center justify-center font-mono text-lg text-primary opacity-70">→</div>
+        <div className="rounded-2xl border border-solid border-border bg-white/[.04] px-5 py-4">
+          <p className="font-mono text-[10.5px] tracking-[2px] text-zinc-600">02 · FETCH</p>
+          <p className="mt-2.5 text-[13px] text-muted-foreground">抓取正文</p>
+          <p className="mt-1 font-mono text-[34px] font-bold leading-none text-primary">
+            {stats.fetch.succeeded} <small className="text-[15px] font-semibold text-muted-foreground">成功</small>
+          </p>
+          <p className="mt-1.5 text-[11px] text-zinc-500">{stats.fetch.skipped} 条判重跳过</p>
+        </div>
+        <div className="flex items-center justify-center font-mono text-lg text-primary opacity-70">→</div>
+        <div className="rounded-2xl border border-solid border-border bg-white/[.04] px-5 py-4">
+          <p className="font-mono text-[10.5px] tracking-[2px] text-zinc-600">03 · INDEX</p>
+          <p className="mt-2.5 text-[13px] text-muted-foreground">打标 + 向量化</p>
+          <p className="mt-1 font-mono text-[34px] font-bold leading-none text-primary">{stats.fetch.succeeded}</p>
+          <p className="mt-1.5 text-[11px] text-zinc-500">已入 Milvus 索引</p>
+        </div>
+        <div className="flex items-center justify-center font-mono text-lg text-amber-400 opacity-70">→</div>
+        <div className="rounded-2xl border border-solid border-amber-400/35 bg-amber-400/[.04] px-5 py-4">
+          <p className="font-mono text-[10.5px] tracking-[2px] text-zinc-600">04 · RETRY</p>
+          <p className="mt-2.5 text-[13px] text-muted-foreground">补偿队列</p>
+          <p className="mt-1 font-mono text-[34px] font-bold leading-none text-amber-400">{retryCount}</p>
+          <p className="mt-1.5 text-[11px] text-zinc-500">次日自动重试</p>
+        </div>
+      </div>
+
+      {/* 趋势为主、构成为辅 */}
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1fr_380px]">
+        <div className="rounded-xl border border-solid border-border bg-white/[.04] p-5">
           <div className="mb-3 flex items-baseline">
             <h2 className="text-sm font-semibold text-foreground">每日入库文章</h2>
             <span className="ml-auto text-[11px] text-zinc-400">
@@ -176,8 +200,10 @@ export default function DashboardPage() {
 
         <div className="rounded-xl border border-solid border-border bg-white/[.04] p-5">
           <div className="mb-3 flex items-baseline">
-            <h2 className="text-sm font-semibold text-foreground">分类分布</h2>
-            <span className="ml-auto text-[11px] text-zinc-400">按标签统计</span>
+            <h2 className="text-sm font-semibold text-foreground">内容构成</h2>
+            <span className="ml-auto text-[11px] text-zinc-400">
+              近 14 天 · {tagged} 篇
+            </span>
           </div>
           <div className="h-56">
             {stats.by_category.length === 0 ? (
@@ -208,7 +234,7 @@ export default function DashboardPage() {
               </ResponsiveContainer>
             )}
           </div>
-          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+          <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
             {stats.by_category.slice(0, 6).map((c, i) => (
               <span key={c.tag} className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <span
@@ -216,12 +242,53 @@ export default function DashboardPage() {
                   style={{ background: PIE_COLORS[i % PIE_COLORS.length] }}
                 />
                 {c.tag}
-                <b className="font-mono font-semibold text-zinc-400">{c.count}</b>
+                <b className="ml-auto font-mono font-semibold text-zinc-300">{c.count}</b>
               </span>
             ))}
           </div>
         </div>
       </div>
+
+      {/* 数据源明细：数字 6 → 6 行事实；点击行跳新闻列表按来源筛选 */}
+      {stats.by_feed.length > 0 && (
+        <div className="rounded-xl border border-solid border-border bg-white/[.04] px-3 py-2">
+          <table className="w-full text-[12.5px]">
+            <thead>
+              <tr className="border-b border-solid border-border text-left font-mono text-[10.5px] tracking-wider text-zinc-500">
+                <th className="px-3 py-2 font-medium">数据源</th>
+                <th className="px-3 py-2 font-medium">状态</th>
+                <th className="px-3 py-2 font-medium">最后抓取</th>
+                <th className="px-3 py-2 text-right font-medium">本批入库</th>
+                <th className="px-3 py-2 text-right font-medium">累计文章</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.by_feed.map((f) => (
+                <tr
+                  key={f.id}
+                  onClick={() =>
+                    f.sample_source && router.push(`/news?source=${encodeURIComponent(f.sample_source)}`)
+                  }
+                  className={`border-b border-solid border-white/[.04] text-zinc-400 last:border-0 ${
+                    f.sample_source ? "cursor-pointer hover:bg-white/[.03]" : ""
+                  }`}
+                >
+                  <td className="px-3 py-2 text-zinc-200">{f.name}</td>
+                  <td className={`px-3 py-2 ${f.enabled ? "text-emerald-400" : "text-zinc-500"}`}>
+                    {f.enabled ? "● 启用" : "○ 停用"}
+                  </td>
+                  <td className="px-3 py-2 font-mono text-[11px]">{f.last_fetched_at ?? "-"}</td>
+                  <td className="px-3 py-2 text-right font-mono">{f.today}</td>
+                  <td className="px-3 py-2 text-right font-mono">{f.total}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="px-3 pb-1 pt-1.5 text-[10.5px] text-zinc-600">
+            点击数据源行可跳转新闻列表（按来源筛选）
+          </p>
+        </div>
+      )}
     </div>
   );
 }
