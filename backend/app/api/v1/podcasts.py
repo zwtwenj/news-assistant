@@ -121,6 +121,20 @@ def list_podcasts(
     }
 
 
+@router.get("/quota")
+def podcast_quota(user: CurrentUser) -> dict:
+    """当前用户播客生成配额余量（供生成页展示剩余次数）。"""
+    now = datetime.now(UTC)
+    hour_key = f"quota:podcast:h:{user.id}:{now:%Y%m%d%H}"
+    day_key = f"quota:podcast:d:{user.id}:{now:%Y%m%d}"
+    hour_used = int(redis_client.get(hour_key) or 0)
+    day_used = int(redis_client.get(day_key) or 0)
+    return {
+        "hourly_left": max(0, HOURLY_LIMIT - hour_used),
+        "daily_left": max(0, DAILY_LIMIT - day_used),
+    }
+
+
 @router.get("/{podcast_id}")
 def get_podcast(podcast_id: int, db: DB, user: CurrentUser) -> PodcastOut:
     p = _get_owned(db, user, podcast_id)
