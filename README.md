@@ -88,4 +88,4 @@ uv run ruff check .
 
 ## 环境变量
 
-见 `backend/.env.example`。**真实 `.env` 已被 .gitignore 排除，永不入库**；上线前须轮换所有密钥（见 plan.md §9）。
+见 `backend/.env.example`。
