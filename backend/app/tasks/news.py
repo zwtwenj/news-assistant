@@ -507,3 +507,4 @@ def mark_pipeline_done(day: str) -> str:
     redis_client.set(f"pipeline:done:{day}", "1", ex=PIPELINE_DONE_TTL)
     logger.info("pipeline 当日全部阶段完成（done={}）", day)
     return "done"
+

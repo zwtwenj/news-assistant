@@ -13,6 +13,7 @@ from app.api.v1.rss import public_router as rss_public_router
 from app.core.config import get_settings
 from app.core.errcode import api_error_handler, validation_error_handler
 from app.core.logging import setup_logging
+from app.core.request_logging import RequestLoggingMiddleware
 
 setup_logging()
 
@@ -44,6 +45,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # 请求日志：每个 /api 请求落一条 request_logs（入参/出参/耗时/user_id）
+    app.add_middleware(RequestLoggingMiddleware)
 
     app.include_router(api_router, prefix=settings.api_v1_prefix)
     # 根路径也暴露探针，compose healthcheck / 负载均衡无需带前缀

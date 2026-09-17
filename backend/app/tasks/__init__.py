@@ -44,6 +44,11 @@ celery_app.conf.update(
             "task": "app.tasks.news.run_daily_pipeline",
             "schedule": crontab(hour=2, minute=0),
         },
+        # 请求日志保留 14 天，凌晨低峰清理
+        "cleanup-request-logs": {
+            "task": "app.tasks.maintenance.cleanup_request_logs",
+            "schedule": crontab(hour=4, minute=30),
+        },
     },
     task_serializer="json",
     result_serializer="json",
