@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import and_, func, or_, text
 
 from app.api.deps import DB, CurrentUser
@@ -127,6 +127,31 @@ def news_stats(db: DB) -> dict:
         "last_fetched_at": _fmt(last_fetched),
         "by_day": [{"date": str(r.day), "count": r.count} for r in by_day_rows],
         "by_category": [{"tag": r.tag, "count": r.count} for r in by_category_rows],
+    }
+
+
+@router.get("/articles/{article_id}")
+def get_article(article_id: int, db: DB, _user: CurrentUser) -> dict:
+    """单篇详情：返回全文正文（列表接口的摘要是 100 字截断，阅读面板需要全文）。"""
+    a = db.get(Article, article_id)
+    if a is None or a.deleted_at:
+        raise HTTPException(status_code=404, detail="文章不存在")
+    from datetime import UTC
+    from zoneinfo import ZoneInfo
+
+    publish = ""
+    if a.publish_time:
+        pt = a.publish_time if a.publish_time.tzinfo else a.publish_time.replace(tzinfo=UTC)
+        publish = pt.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
+    return {
+        "id": a.id,
+        "title": a.title,
+        "source": a.source,
+        "publish_time": publish,
+        "summary": a.summary or "",
+        "content": a.content or "",
+        "tags": a.tags or [],
+        "url": a.url,
     }
 
 
