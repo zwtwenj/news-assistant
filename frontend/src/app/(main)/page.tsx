@@ -38,6 +38,9 @@ const TOOLTIP_STYLE = {
   fontSize: 12,
   color: "#e4e4e7",
 } as const;
+/* Tooltip 的文字色必须单独给（contentStyle 不影响 item/label 的默认深色） */
+const TOOLTIP_ITEM = { color: "#e4e4e7" } as const;
+const TOOLTIP_LABEL = { color: "#a1a1aa" } as const;
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -113,7 +116,7 @@ export default function DashboardPage() {
             >
               {c.value}
             </p>
-            {c.hint && <p className="mt-1.5 text-[11px] text-zinc-600">{c.hint}</p>}
+            {c.hint && <p className="mt-1.5 text-[11px] text-zinc-400">{c.hint}</p>}
           </div>
         ))}
       </div>
@@ -123,7 +126,7 @@ export default function DashboardPage() {
         <div className="rounded-xl border border-solid border-border bg-white/[.04] p-5 xl:col-span-2">
           <div className="mb-3 flex items-baseline">
             <h2 className="text-sm font-semibold text-foreground">每日入库文章</h2>
-            <span className="ml-auto text-[11px] text-zinc-600">
+            <span className="ml-auto text-[11px] text-zinc-400">
               近 14 天 · 日均{" "}
               {dayData.length
                 ? Math.round(dayData.reduce((s, d) => s + d.count, 0) / dayData.length)
@@ -139,7 +142,7 @@ export default function DashboardPage() {
                   fontSize={11}
                   tickLine={false}
                   axisLine={{ stroke: "rgba(255,255,255,.1)" }}
-                  tick={{ fill: "#52525b", fontFamily: "var(--font-geist-mono)" }}
+                  tick={{ fill: "#a1a1aa", fontFamily: "var(--font-geist-mono)" }}
                 />
                 <YAxis
                   allowDecimals={false}
@@ -147,11 +150,13 @@ export default function DashboardPage() {
                   tickLine={false}
                   axisLine={false}
                   width={28}
-                  tick={{ fill: "#52525b", fontFamily: "var(--font-geist-mono)" }}
+                  tick={{ fill: "#a1a1aa", fontFamily: "var(--font-geist-mono)" }}
                 />
                 <Tooltip
                   cursor={{ fill: "rgba(255,255,255,.04)" }}
                   contentStyle={TOOLTIP_STYLE}
+                  itemStyle={TOOLTIP_ITEM}
+                  labelStyle={TOOLTIP_LABEL}
                   formatter={(v) => [`${v} 篇`, "入库"]}
                   labelFormatter={(l) => `日期 ${l}`}
                 />
@@ -172,7 +177,7 @@ export default function DashboardPage() {
         <div className="rounded-xl border border-solid border-border bg-white/[.04] p-5">
           <div className="mb-3 flex items-baseline">
             <h2 className="text-sm font-semibold text-foreground">分类分布</h2>
-            <span className="ml-auto text-[11px] text-zinc-600">按标签统计</span>
+            <span className="ml-auto text-[11px] text-zinc-400">按标签统计</span>
           </div>
           <div className="h-56">
             {stats.by_category.length === 0 ? (
@@ -193,7 +198,12 @@ export default function DashboardPage() {
                       <Cell key={entry.tag} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                     ))}
                   </Pie>
-                  <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v, name) => [`${v} 篇`, name]} />
+                  <Tooltip
+                    contentStyle={TOOLTIP_STYLE}
+                    itemStyle={TOOLTIP_ITEM}
+                    labelStyle={TOOLTIP_LABEL}
+                    formatter={(v, name) => [`${v} 篇`, name]}
+                  />
                 </PieChart>
               </ResponsiveContainer>
             )}
