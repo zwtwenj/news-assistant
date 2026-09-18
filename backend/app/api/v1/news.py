@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, func, or_, text
 
 from app.api.deps import DB, CurrentUser
 from app.models.article import Article
