@@ -9,11 +9,13 @@
 
 import json
 import time
+import uuid
 from typing import Any
 
 from loguru import logger
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.core.db_timing import db_spans
 from app.db.session import SessionLocal
 from app.models.request_log import RequestLog
 from app.services.auth.jwt import decode_access_token
@@ -97,6 +99,11 @@ class RequestLoggingMiddleware:
         content_type = headers.get("content-type", "")
         replayed = False
 
+        # 接口分析三要素：请求关联 ID、SQL 耗时收集器（路由模板在响应阶段从 scope 取）
+        request_id = uuid.uuid4().hex
+        spans: list[float] = []
+        db_spans_token = db_spans.set(spans)
+
         async def replay_receive() -> Message:
             nonlocal replayed
             if not replayed:
@@ -113,6 +120,30 @@ class RequestLoggingMiddleware:
                 for key, value in msg.get("headers", []):
                     if key.decode("latin-1").lower() == "content-type":
                         state["capture"] = value.decode("latin-1").startswith("application/json")
+                # 关联 ID 回传客户端（客户端分段上报按此回填日志行）
+                msg["headers"] = list(msg.get("headers", [])) + [
+                    (b"x-request-id", request_id.encode("ascii")),
+                ]
+                # Server-Timing（W3C 标准）：db=SQL 耗时，app=非 DB 应用时间。
+                # SSE 长流的总耗时无意义，不注入
+                ct = next(
+                    (
+                        v.decode("latin-1")
+                        for k, v in msg.get("headers", [])
+                        if k.decode("latin-1").lower() == "content-type"
+                    ),
+                    "",
+                )
+                if not ct.startswith("text/event-stream"):
+                    so_far_ms = int((time.perf_counter() - started) * 1000)
+                    db_ms = int(sum(spans) * 1000)
+                    app_ms = max(0, so_far_ms - db_ms)
+                    msg["headers"] = msg["headers"] + [
+                        (
+                            b"server-timing",
+                            f"db;dur={db_ms}, app;dur={app_ms}".encode("ascii"),
+                        ),
+                    ]
             elif msg["type"] == "http.response.body" and state["capture"]:
                 if sum(len(c) for c in state["chunks"]) < _RESP_MAX:
                     state["chunks"].append(msg.get("body", b""))
@@ -122,7 +153,10 @@ class RequestLoggingMiddleware:
         try:
             await self.app(scope, replay_receive, send_wrapper)
         finally:
+            db_spans.reset(db_spans_token)
             duration_ms = int((time.perf_counter() - started) * 1000)
+            db_time_ms = int(sum(spans) * 1000)
+            route = getattr(scope.get("route"), "path", None)
             try:
                 resp_body = b"".join(state["chunks"]).decode("utf-8", errors="replace")
                 ip = headers.get("x-forwarded-for", "").split(",")[0].strip() or (
@@ -132,6 +166,9 @@ class RequestLoggingMiddleware:
                     db.add(RequestLog(
                         method=scope.get("method", ""),
                         path=path[:256],
+                        route=route[:256] if route else None,
+                        db_time_ms=db_time_ms,
+                        request_id=request_id,
                         query=(scope.get("query_string") or b"").decode("latin-1")[:512] or None,
                         status=state["status"],
                         duration_ms=duration_ms,

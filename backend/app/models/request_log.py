@@ -28,6 +28,19 @@ class RequestLog(Base):
     )
     method: Mapped[str] = mapped_column(String(8))
     path: Mapped[str] = mapped_column(String(256), index=True)
+    # 接口分析聚合单元：FastAPI 路由模板（/news/articles/{id}），未匹配路由为 NULL
+    route: Mapped[str | None] = mapped_column(String(256))
+    # 本次请求内全部 SQL 耗时（游标事件累加）；与 duration 相减 = 非 DB 应用时间
+    db_time_ms: Mapped[int | None] = mapped_column(Integer)
+    # 请求关联 ID（X-Request-Id 回传客户端，客户端分段上报按此回填）
+    request_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    # 客户端分段耗时（Resource Timing，c_ 前缀 = client-reported，上报后回填，全可空）
+    c_dns_ms: Mapped[int | None] = mapped_column(Integer)
+    c_tcp_ms: Mapped[int | None] = mapped_column(Integer)
+    c_tls_ms: Mapped[int | None] = mapped_column(Integer)
+    c_ttfb_ms: Mapped[int | None] = mapped_column(Integer)
+    c_download_ms: Mapped[int | None] = mapped_column(Integer)
+    c_total_ms: Mapped[int | None] = mapped_column(Integer)
     query: Mapped[str | None] = mapped_column(String(512))
     status: Mapped[int] = mapped_column(Integer, index=True)
     duration_ms: Mapped[int] = mapped_column(Integer)

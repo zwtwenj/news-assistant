@@ -32,6 +32,90 @@ const NETWORK_MESSAGE = "服务暂不可用，请稍后重试";
 
 let refreshInFlight: Promise<boolean> | null = null;
 
+// ============ 客户端接口耗时采集（接口分析标准的客户端侧） ============
+// 同源 /api/* 请求可读完整 Resource Timing 分段；按响应头 x-request-id 关联
+// 服务器日志行，sendBeacon 攒批上报。全程 try/catch，绝不影响业务请求。
+
+interface ClientTiming {
+  request_id: string;
+  dns_ms: number | null;
+  tcp_ms: number | null;
+  tls_ms: number | null;
+  ttfb_ms: number | null;
+  download_ms: number | null;
+  total_ms: number | null;
+}
+
+const TIMING_BATCH = 5;
+const TIMING_FLUSH_MS = 30_000;
+const TIMING_LOOKUP_DELAY_MS = 500;
+const timingBuffer: ClientTiming[] = [];
+let timingTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Resource Timing 条目在响应体消费完之后才异步提交进缓冲区，响应刚返回就
+// 同步查 getEntriesByName 会拿到空——用 PerformanceObserver 常驻接收条目，
+// 上报时延迟一拍再从 Map 里取
+const timingEntries = new Map<string, PerformanceResourceTiming>();
+try {
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      timingEntries.set(entry.name, entry as PerformanceResourceTiming);
+    }
+  }).observe({ type: "resource", buffered: true });
+} catch {
+  // 老浏览器无 PerformanceObserver：放弃采集，不影响业务
+}
+
+function flushClientTiming() {
+  timingTimer = null;
+  if (!timingBuffer.length) return;
+  const batch = timingBuffer.splice(0, 20);
+  try {
+    const blob = new Blob([JSON.stringify({ items: batch })], { type: "application/json" });
+    navigator.sendBeacon("/api/v1/metrics/client-timing", blob);
+  } catch {
+    // 上报失败静默丢弃——监控绝不干扰业务
+  }
+}
+
+function collectClientTiming(path: string, resp: Response) {
+  try {
+    if (path.startsWith("/metrics/")) return; // 不采集关于采集的请求
+    const requestId = resp.headers.get("x-request-id");
+    if (!requestId) return;
+    const url = `${location.origin}/api/v1${path}`;
+    setTimeout(() => {
+      try {
+        const entry = timingEntries.get(url);
+        if (!entry || !entry.responseStart) return;
+        timingEntries.delete(url);
+        const r = (v: number) => (Number.isFinite(v) && v > 0 ? Math.round(v) : null);
+        timingBuffer.push({
+          request_id: requestId,
+          dns_ms: r(entry.domainLookupEnd - entry.domainLookupStart),
+          tcp_ms: r(entry.connectEnd - entry.connectStart),
+          tls_ms:
+            entry.secureConnectionStart > 0
+              ? r(entry.connectEnd - entry.secureConnectionStart)
+              : null,
+          ttfb_ms: r(entry.responseStart - entry.startTime),
+          download_ms: r(entry.responseEnd - entry.responseStart),
+          total_ms: r(entry.responseEnd - entry.startTime),
+        });
+        if (timingBuffer.length >= TIMING_BATCH) {
+          flushClientTiming();
+        } else if (!timingTimer) {
+          timingTimer = setTimeout(flushClientTiming, TIMING_FLUSH_MS);
+        }
+      } catch {
+        // 采集失败静默
+      }
+    }, TIMING_LOOKUP_DELAY_MS);
+  } catch {
+    // 采集失败静默
+  }
+}
+
 async function tryRefresh(): Promise<boolean> {
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
@@ -122,6 +206,9 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
       }
     }
   }
+
+  // 采集点：此处 resp 已是最终响应（含 401 续期重放后），ok 与业务错误都要计时
+  collectClientTiming(path, resp);
 
   if (!resp.ok) throw await parseError(resp);
   if (resp.status === 204) return undefined as T;
