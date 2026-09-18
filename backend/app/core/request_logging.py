@@ -85,11 +85,11 @@ class RequestLoggingMiddleware:
 
         # 请求体读入并截断存储副本（完整体原样转发给下游）
         body = b""
-        while True:
+        more = True
+        while more:
             msg = await receive()
             body += msg.get("body", b"")
-            if not msg.get("more_body", False):
-                break
+            more = msg.get("more_body", False)
 
         headers = {
             k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])
@@ -102,7 +102,8 @@ class RequestLoggingMiddleware:
             if not replayed:
                 replayed = True
                 return {"type": "http.request", "body": body, "more_body": False}
-            return {"type": "http.disconnect"}
+            # 体已消费：后续透传原始 receive（uvicorn 以此感知真实断连）
+            return await receive()
 
         state: dict[str, Any] = {"status": 0, "capture": False, "chunks": []}
 

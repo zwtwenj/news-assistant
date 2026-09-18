@@ -1,7 +1,7 @@
 "use client";
 
 /*
- * AI 助手聊天页：多会话（IndexedDB）+ SSE 流式渲染 + 引用溯源 + 工具结果展示
+ * AI 助手聊天页：多会话（IndexedDB）+ SSE 流式渲染 + 引用溯源 + 工具过程可见化
  * + 图片上传 + 语音输入（MediaRecorder→ASR）+ 回答语音播报（TTS）。
  */
 
@@ -31,16 +31,15 @@ import {
   deleteConversation,
   listConversations,
   listMessages,
-  updateMessage,
 } from "@/lib/chat-store";
 
 type ToolEvent = { name: string; result: unknown };
 
 const TOOL_LABELS: Record<string, string> = {
-  list_today_news: "正在查询新闻库…",
-  match_similar_tags: "正在匹配相关标签…",
-  web_search_news: "正在联网搜索…",
-  analyze_image: "正在分析图片…",
+  list_today_news: "检索新闻库",
+  match_similar_tags: "匹配相关标签",
+  web_search_news: "联网搜索",
+  analyze_image: "分析图片",
 };
 
 export default function ChatPage() {
@@ -173,14 +172,14 @@ export default function ChatPage() {
     }
   };
 
-  const send = async () => {
-    const text = input.trim();
+  const send = async (override?: string) => {
+    const text = (override ?? input).trim();
     if (!text || streaming) return;
     setError("");
     setStreaming(true);
     setStreamText("");
     setToolEvents([]);
-    setInput("");
+    if (!override) setInput("");
 
     // 首次发送时自动建会话
     let convId = activeId;
@@ -267,15 +266,15 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="flex h-[calc(100dvh-108px)] gap-4">
+    <div className="flex h-[calc(100dvh-108px)] gap-3.5">
       {/* 会话侧栏 */}
       <aside
-        className={`${sidebarOpen ? "flex" : "hidden"} absolute inset-y-0 left-0 z-20 w-64 flex-col border-r border-solid border-black/[.06] bg-white p-3 md:relative md:flex dark:border-white/[.12] dark:bg-black`}
+        className={`${sidebarOpen ? "flex" : "hidden"} absolute inset-y-0 left-0 z-20 w-64 flex-col rounded-xl border border-solid border-border bg-white/[.04] p-3 md:relative md:flex dark:bg-white/[.02]`}
       >
         <button
           type="button"
           onClick={() => void newConversation()}
-          className="mb-3 flex items-center justify-center gap-2 rounded-md bg-foreground px-3 py-2 text-sm font-medium text-background"
+          className="mb-3 flex items-center justify-center gap-2 rounded-lg border border-solid border-primary/40 bg-primary/[.07] px-3 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary/[.14]"
         >
           <MessageSquarePlus className="size-4" /> 新对话
         </button>
@@ -283,10 +282,10 @@ export default function ChatPage() {
           {convs.map((c) => (
             <div
               key={c.id}
-              className={`group flex cursor-pointer items-center justify-between rounded-md px-3 py-2 text-sm ${
+              className={`group flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-sm ${
                 c.id === activeId
-                  ? "bg-black/[.06] font-medium text-black dark:bg-white/[.12] dark:text-zinc-50"
-                  : "text-zinc-600 hover:bg-black/[.04] dark:text-zinc-400 dark:hover:bg-white/[.06]"
+                  ? "bg-primary/[.08] font-medium text-zinc-100"
+                  : "text-zinc-400 hover:bg-white/[.05] hover:text-zinc-200"
               }`}
               onClick={() => {
                 setActiveId(c.id);
@@ -296,7 +295,7 @@ export default function ChatPage() {
               <span className="truncate">{c.title}</span>
               <button
                 type="button"
-                className="hidden text-zinc-400 hover:text-red-500 group-hover:block"
+                className="hidden text-zinc-500 hover:text-destructive group-hover:block"
                 onClick={(e) => {
                   e.stopPropagation();
                   void removeConversation(c.id);
@@ -307,13 +306,13 @@ export default function ChatPage() {
               </button>
             </div>
           ))}
-          {!convs.length && <p className="px-2 py-4 text-xs text-zinc-400">还没有对话</p>}
+          {!convs.length && <p className="px-2 py-4 text-xs text-zinc-500">还没有对话</p>}
         </div>
       </aside>
 
       {/* 主聊天区 */}
-      <section className="flex min-w-0 flex-1 flex-col rounded-xl border border-solid border-black/[.06] bg-white dark:border-white/[.12] dark:bg-black">
-        <header className="flex items-center gap-2 border-b border-solid border-black/[.06] px-4 py-3 dark:border-white/[.12]">
+      <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-solid border-border bg-white/[.04]">
+        <header className="flex items-center gap-2 border-b border-solid border-border px-4 py-3">
           <button
             type="button"
             className="rounded-md px-2 py-1 text-sm text-zinc-500 md:hidden"
@@ -321,15 +320,33 @@ export default function ChatPage() {
           >
             ☰
           </button>
-          <h1 className="text-sm font-semibold text-black dark:text-zinc-50">AI 助手 · 小讯</h1>
-          <span className="text-xs text-zinc-400">基于新闻库回答 · 支持多轮追问</span>
+          <h1 className="text-sm font-semibold text-foreground">AI 助手 · 小讯</h1>
+          <span className="text-xs text-zinc-500">基于新闻库回答 · 支持多轮追问</span>
+          <span className="ml-auto font-mono text-[10px] tracking-[2px] text-zinc-600">RAG://ONLINE</span>
         </header>
 
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
           {!messages.length && !streaming && (
-            <div className="flex h-full flex-col items-center justify-center gap-2 text-zinc-400">
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-zinc-400">
+              <div className="flex size-12 items-center justify-center rounded-full border border-solid border-primary/30 bg-primary/10 text-base font-bold text-primary">
+                讯
+              </div>
               <p className="text-sm">问我任何新闻相关的问题</p>
-              <p className="text-xs">「今天有什么新闻」「自然灾害相关报道」「还有吗」</p>
+              <div className="flex flex-wrap justify-center gap-2">
+                {["今天有什么新闻", "自然灾害相关报道", "还有吗"].map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => {
+                      setInput(s);
+                      void send(s);
+                    }}
+                    className="rounded-full border border-solid border-border bg-white/[.03] px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:border-primary/40 hover:text-primary"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
           {messages.map((m) => (
@@ -358,14 +375,15 @@ export default function ChatPage() {
             <div className="flex justify-start">
               <div className="max-w-[85%] space-y-2">
                 {toolEvents.map((t, i) => (
-                  <p key={i} className="flex items-center gap-1.5 text-xs text-blue-500">
+                  <p key={i} className="flex items-center gap-1.5 font-mono text-[11px] text-primary/80">
                     <Loader2 className="size-3 animate-spin" />
                     {TOOL_LABELS[t.name] ?? t.name}
                   </p>
                 ))}
                 {streamText ? (
-                  <div className="whitespace-pre-wrap rounded-lg bg-black/[.04] px-3 py-2 text-sm leading-relaxed text-black dark:bg-white/[.08] dark:text-zinc-100">
+                  <div className="whitespace-pre-wrap rounded-lg border border-solid border-border bg-white/[.05] px-3.5 py-2.5 text-sm leading-relaxed text-zinc-200">
                     {streamText}
+                    <span className="ml-0.5 inline-block h-3.5 w-[6px] animate-pulse bg-primary align-middle" />
                   </div>
                 ) : (
                   !toolEvents.length && <Spinner label="思考中…" />
@@ -377,18 +395,18 @@ export default function ChatPage() {
         </div>
 
         {/* 输入区 */}
-        <footer className="border-t border-solid border-black/[.06] p-3 dark:border-white/[.12]">
+        <footer className="border-t border-solid border-border p-3.5">
           {pendingImage && (
             <div className="mb-2 flex items-center gap-2 text-xs text-zinc-500">
               {/* eslint-disable-next-line @next/next/no-img-element -- 用户上传预览 */}
               <img src={pendingImage.preview} alt="待发送" className="size-10 rounded object-cover" />
               <span>图片已就绪（5 分钟内有效）</span>
-              <button type="button" onClick={() => setPendingImage(null)} className="text-zinc-400 hover:text-red-500">
+              <button type="button" onClick={() => setPendingImage(null)} className="text-zinc-500 hover:text-red-400">
                 <X className="size-3.5" />
               </button>
             </div>
           )}
-          {error && <p className="mb-2 text-xs text-red-500">{error}</p>}
+          {error && <p className="mb-2 text-xs text-red-400">{error}</p>}
           <div className="flex items-end gap-2">
             <input
               ref={fileRef}
@@ -404,7 +422,7 @@ export default function ChatPage() {
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
-              className="rounded-md p-2 text-zinc-400 hover:text-foreground"
+              className="rounded-lg p-2 text-zinc-500 hover:text-primary"
               title="上传图片"
             >
               <ImageIcon className="size-5" />
@@ -412,7 +430,7 @@ export default function ChatPage() {
             <button
               type="button"
               onClick={() => void toggleRecord()}
-              className={`rounded-md p-2 ${recording ? "text-red-500" : "text-zinc-400 hover:text-foreground"}`}
+              className={`rounded-lg p-2 ${recording ? "text-red-400" : "text-zinc-500 hover:text-foreground"}`}
               title={recording ? "停止录音" : "语音输入"}
             >
               {recording ? <Square className="size-5" /> : <Mic className="size-5" />}
@@ -428,13 +446,13 @@ export default function ChatPage() {
               }}
               rows={1}
               placeholder="输入问题，Enter 发送（Shift+Enter 换行）"
-              className="max-h-32 min-h-[2.5rem] flex-1 resize-none rounded-lg border border-solid border-black/[.1] bg-transparent px-3 py-2 text-sm outline-none focus:border-black dark:border-white/[.2] dark:focus:border-zinc-50"
+              className="max-h-32 min-h-[2.5rem] flex-1 resize-none rounded-lg border border-solid border-white/10 bg-black/30 px-3.5 py-2.5 text-sm text-foreground outline-none placeholder:text-zinc-600 focus:border-primary focus:ring-[3px] focus:ring-primary/15"
             />
             <button
               type="button"
               disabled={!input.trim() || streaming}
               onClick={() => void send()}
-              className="rounded-lg bg-foreground p-2.5 text-background disabled:opacity-40"
+              className="rounded-lg bg-gradient-to-r from-primary to-[#67e8f9] p-2.5 text-[#001318] shadow-[0_0_16px_rgba(34,211,238,.3)] transition-shadow hover:shadow-[0_0_26px_rgba(34,211,238,.5)] disabled:opacity-40 disabled:shadow-none"
               title="发送"
             >
               <ArrowUp className="size-4" />
@@ -457,104 +475,124 @@ function MessageBubble({
   speaking: boolean;
   onFeedback: (traceId: string, rating: 0 | 1 | null) => void;
 }) {
-  const [feedback, setFeedback] = useState<0 | 1 | null>(msg.meta?.feedback ?? null);
-
-  // 父组件数据刷新后同步已提交状态
-  useEffect(() => {
-    setFeedback(msg.meta?.feedback ?? null);
-  }, [msg.meta?.feedback]);
+  const [feedbackShown, setFeedbackShown] = useState(msg.meta?.feedback ?? null);
+  if (feedbackShown !== (msg.meta?.feedback ?? null)) {
+    // 渲染期校正：外部数据变化直接反映（无副作用，安全）
+    setFeedbackShown(msg.meta?.feedback ?? null);
+  }
+  const feedback = feedbackShown;
   const isUser = msg.role === "user";
   const newsResult = !isUser
     ? (msg.meta?.tool_calls ?? []).filter((t) => t.name === "list_today_news")
     : [];
+  const msgTime = new Date(msg.created_at);
+  const timeText = `${String(msgTime.getHours()).padStart(2, "0")}:${String(msgTime.getMinutes()).padStart(2, "0")}`;
+
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div className={`max-w-[85%] space-y-2 ${isUser ? "items-end" : "items-start"}`}>
-        {msg.meta?.image_preview && (
-          // eslint-disable-next-line @next/next/no-img-element -- 用户上传预览
-          <img src={msg.meta.image_preview} alt="" className="max-h-40 rounded-lg object-cover" />
+    <div className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}>
+      <div className="mb-1 flex items-center gap-2 text-[10px] text-zinc-500">
+        {!isUser && (
+          <>
+            <span className="flex size-5 items-center justify-center rounded-full bg-gradient-to-br from-primary to-[#a78bfa] text-[9px] font-bold text-[#001318]">
+              讯
+            </span>
+            <span className="font-medium text-zinc-400">小讯</span>
+          </>
         )}
-        {msg.content && (
-          <div
-            className={`whitespace-pre-wrap rounded-lg px-3 py-2 text-sm leading-relaxed ${
-              isUser
-                ? "bg-foreground text-background"
-                : "bg-black/[.04] text-black dark:bg-white/[.08] dark:text-zinc-100"
-            }`}
-          >
-            {msg.content}
-          </div>
-        )}
-        {/* 今日新闻列表 */}
-        {newsResult.map((t, i) => {
-          const r = t.result as { items?: { title: string; url: string; source: string; publish_time: string }[]; page?: number; has_more?: boolean };
-          return (
-            <div key={i} className="space-y-1 rounded-lg border border-solid border-black/[.06] p-2 dark:border-white/[.12]">
-              {(r.items ?? []).map((n, j) => (
-                <a
-                  key={j}
-                  href={n.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="block truncate text-xs text-blue-600 hover:underline dark:text-blue-400"
-                >
-                  · {n.title}
-                  <span className="ml-1 text-zinc-400">
-                    {n.source} {n.publish_time}
-                  </span>
-                </a>
-              ))}
-              {r.has_more && <p className="text-xs text-zinc-400">（第 {r.page} 页，还有更多，可说“还有吗”）</p>}
-            </div>
-          );
-        })}
-        {/* 引用来源 */}
-        {!isUser && msg.meta?.rag_sources && msg.meta.rag_sources.length > 0 && (
-          <details className="rounded-md bg-black/[.03] px-2 py-1 text-xs dark:bg-white/[.05]">
-            <summary className="cursor-pointer text-zinc-400">引用来源（{msg.meta.rag_sources.length}）</summary>
-            <div className="mt-1 space-y-1">
-              {msg.meta.rag_sources.map((s, i) => (
-                <a key={i} href={s.url} target="_blank" rel="noreferrer" className="block truncate text-blue-600 hover:underline dark:text-blue-400">
-                  [{i + 1}] {s.title}
-                </a>
-              ))}
-            </div>
-          </details>
-        )}
-        {!isUser && msg.content.length > 4 && (
-          <div className="flex items-center gap-2 text-xs text-zinc-400">
-            <button
-              type="button"
-              disabled={speaking}
-              onClick={() => void onSpeak(msg.content)}
-              className="flex items-center gap-1 hover:text-foreground"
-              title="语音播报"
-            >
-              <Volume2 className="size-3.5" /> 播报
-            </button>
-            {msg.meta?.trace_id && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => onFeedback(msg.meta!.trace_id!, feedback === 1 ? null : 1)}
-                  className={feedback === 1 ? "text-emerald-500" : "hover:text-emerald-500"}
-                  title={feedback === 1 ? "撤销评分" : "有用"}
-                >
-                  <ThumbsUp className="size-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onFeedback(msg.meta!.trace_id!, feedback === 0 ? null : 0)}
-                  className={feedback === 0 ? "text-red-500" : "hover:text-red-500"}
-                  title={feedback === 0 ? "撤销评分" : "没用"}
-                >
-                  <ThumbsDown className="size-3.5" />
-                </button>
-              </>
-            )}
-          </div>
-        )}
+        <span className="font-mono">{timeText}</span>
       </div>
+      {msg.meta?.image_preview && (
+        // eslint-disable-next-line @next/next/no-img-element -- 用户上传预览
+        <img src={msg.meta.image_preview} alt="" className="mb-2 max-h-40 rounded-lg object-cover" />
+      )}
+      {msg.content && (
+        <div
+          className={`whitespace-pre-wrap px-3.5 py-2.5 text-sm leading-relaxed ${
+            isUser
+              ? "rounded-xl border border-solid border-primary/25 bg-primary/[.08] text-zinc-100"
+              : "rounded-lg bg-white/[.05] text-zinc-200"
+          }`}
+        >
+          {msg.content}
+        </div>
+      )}
+      {/* 今日新闻列表 */}
+      {newsResult.map((t, i) => {
+        const r = t.result as { items?: { title: string; url: string; source: string; publish_time: string }[]; page?: number; has_more?: boolean };
+        return (
+          <div key={i} className="mt-2 w-full space-y-1 rounded-lg border border-solid border-border bg-black/25 p-2.5">
+            {(r.items ?? []).map((item, j) => (
+              <a
+                key={j}
+                href={item.url}
+                target="_blank"
+                rel="noreferrer"
+                className="block truncate text-xs text-zinc-400 hover:text-primary"
+              >
+                · {item.title}
+                <span className="ml-1.5 font-mono text-[10px] text-zinc-600">
+                  {item.source} {item.publish_time}
+                </span>
+              </a>
+            ))}
+            {r.has_more && <p className="text-xs text-zinc-500">（第 {r.page} 页，还有更多，可说“还有吗”）</p>}
+          </div>
+        );
+      })}
+      {/* 引用来源 */}
+      {!isUser && msg.meta?.rag_sources && msg.meta.rag_sources.length > 0 && (
+        <details className="mt-2 w-full rounded-lg border border-solid border-border bg-black/25 px-3 py-2 text-xs">
+          <summary className="cursor-pointer text-zinc-400">
+            引用来源（{msg.meta.rag_sources.length}）
+          </summary>
+          <div className="mt-1.5 space-y-1">
+            {msg.meta.rag_sources.map((s, i) => (
+              <a
+                key={i}
+                href={s.url}
+                target="_blank"
+                rel="noreferrer"
+                className="block truncate text-zinc-400 hover:text-primary"
+              >
+                [{i + 1}] {s.title}
+              </a>
+            ))}
+          </div>
+        </details>
+      )}
+      {!isUser && msg.content.length > 4 && (
+        <div className="mt-2 flex items-center gap-3 text-xs text-zinc-500">
+          <button
+            type="button"
+            disabled={speaking}
+            onClick={() => void onSpeak(msg.content)}
+            className="flex items-center gap-1 hover:text-foreground"
+            title="语音播报"
+          >
+            <Volume2 className="size-3.5" /> 播报
+          </button>
+          {msg.meta?.trace_id && (
+            <>
+              <button
+                type="button"
+                onClick={() => onFeedback(msg.meta!.trace_id!, feedback === 1 ? null : 1)}
+                className={feedback === 1 ? "text-emerald-500" : "text-zinc-500 hover:text-emerald-400"}
+                title={feedback === 1 ? "撤销评分" : "有用"}
+              >
+                <ThumbsUp className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => onFeedback(msg.meta!.trace_id!, feedback === 0 ? null : 0)}
+                className="text-zinc-500 hover:text-red-400"
+                title={feedback === 0 ? "撤销评分" : "没用"}
+              >
+                <ThumbsDown className="size-3.5" />
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
