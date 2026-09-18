@@ -38,6 +38,7 @@ from app.services.news import quality as quality_svc
 from app.services.news import rss as rss_svc
 from app.services.news import semantic_check as semantic_svc
 from app.services.news import simhash as simhash_svc
+from app.services.news import stats as stats_svc
 from app.services.news import vector as vector_svc
 from app.services.news import vocabulary as vocabulary_svc
 from app.services.observability.langfuse_client import get_langfuse, init_langfuse
@@ -505,6 +506,7 @@ def sync_tag_vocabulary() -> str:
 def mark_pipeline_done(day: str) -> str:
     """链尾标记：整条流水线走完（各阶段已消化自身失败）才算当日完成。"""
     redis_client.set(f"pipeline:done:{day}", "1", ex=PIPELINE_DONE_TTL)
+    stats_svc.refresh_cache()  # 数据总览缓存对齐管道完成时刻
     logger.info("pipeline 当日全部阶段完成（done={}）", day)
     return "done"
 

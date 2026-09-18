@@ -1,9 +1,9 @@
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import and_, func, or_, text
+from sqlalchemy import and_, func, or_
 
 from app.api.deps import DB, CurrentUser
 from app.models.article import Article
-from app.models.feed import Feed
+from app.services.news.stats import get_news_stats
 
 router = APIRouter(prefix="/news", tags=["news"])
 
@@ -24,110 +24,12 @@ def list_tags(db: DB, _user: CurrentUser, limit: int = Query(200, ge=1, le=500))
 
 
 @router.get("/stats")
-def news_stats(db: DB) -> dict:
-    """首页数据总览：总量/阶段状态/每日入库/分类分布/最后更新时间。公开接口（仅聚合数）。"""
-    base = Article.deleted_at.is_(None)
+def news_stats() -> dict:
+    """首页数据总览：总量/阶段状态/每日入库/分类分布/最后更新时间。公开接口（仅聚合数）。
 
-    total = db.query(func.count(Article.id)).filter(base).scalar() or 0
-    feeds = (
-        db.query(func.count(Feed.id))
-        .filter(Feed.enabled.is_(True), Feed.deleted_at.is_(None))
-        .scalar()
-        or 0
-    )
-
-    status_rows = (
-        db.query(Article.fetch_status, func.count(Article.id))
-        .filter(base)
-        .group_by(Article.fetch_status)
-        .all()
-    )
-    fetch_stats = {s: c for s, c in status_rows}
-
-    last_updated = db.query(func.max(Article.updated_at)).filter(base).scalar()
-    last_fetched = db.query(func.max(Feed.last_fetched_at)).scalar()
-
-    # 最近 14 天每日入库量（按上海时区分日，含空日期补零，前端画图方便）
-    by_day_rows = db.execute(
-        text(
-            "SELECT d::date AS day, COUNT(a.id) AS count "
-            "FROM generate_series("
-            "  (now() AT TIME ZONE 'Asia/Shanghai')::date - INTERVAL '13 days',"
-            "  (now() AT TIME ZONE 'Asia/Shanghai')::date, '1 day') AS d "
-            "LEFT JOIN articles a "
-            "  ON (a.created_at AT TIME ZONE 'Asia/Shanghai')::date = d::date "
-            "  AND a.deleted_at IS NULL "
-            "GROUP BY d ORDER BY d"
-        )
-    ).all()
-
-    # 分类分布（tags jsonb 展开计数，只统计打标成功的）
-    by_category_rows = db.execute(
-        text(
-            "SELECT tag, COUNT(*) AS count FROM articles, "
-            "jsonb_array_elements_text(tags) AS tag "
-            "WHERE deleted_at IS NULL AND ai_status = 'succeeded' "
-            "GROUP BY tag ORDER BY count DESC LIMIT 12"
-        )
-    ).all()
-
-    def _fmt(dt) -> str | None:  # noqa: ANN001
-        if dt is None:
-            return None
-        from zoneinfo import ZoneInfo
-
-        if dt.tzinfo is None:  # PG 返回的 naive UTC
-            from datetime import UTC
-
-            dt = dt.replace(tzinfo=UTC)
-        return dt.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
-
-    # per-feed 统计：数据总览的源明细表（名称/启用/最后抓取/本批入库/累计/代表性来源值）
-    by_feed_rows = db.execute(
-        text(
-            """
-            SELECT f.id, f.name, f.enabled, f.last_fetched_at,
-                   COUNT(a.id) AS total,
-                   COUNT(a.id) FILTER (WHERE
-                     (a.created_at AT TIME ZONE 'Asia/Shanghai')::date
-                     = (now() AT TIME ZONE 'Asia/Shanghai')::date) AS today,
-                   MAX(a.source) AS sample_source
-            FROM feeds f
-            LEFT JOIN articles a ON a.feed_id = f.id AND a.deleted_at IS NULL
-            WHERE f.deleted_at IS NULL AND f.enabled
-            GROUP BY f.id, f.name, f.enabled, f.last_fetched_at
-            ORDER BY total DESC
-            """
-        )
-    ).all()
-
-    return {
-        "total": total,
-        "feeds": feeds,
-        "by_feed": [
-            {
-                "id": r.id,
-                "name": r.name,
-                "enabled": r.enabled,
-                "last_fetched_at": _fmt(r.last_fetched_at),
-                "today": r.today,
-                "total": r.total,
-                # 代表性来源值：跳转新闻列表按 source 精确筛选用
-                "sample_source": r.sample_source,
-            }
-            for r in by_feed_rows
-        ],
-        "fetch": {
-            "succeeded": fetch_stats.get("succeeded", 0),
-            "skipped": fetch_stats.get("skipped", 0),
-            "pending": fetch_stats.get("pending", 0),
-            "failed": fetch_stats.get("failed", 0),
-        },
-        "last_updated_at": _fmt(last_updated),
-        "last_fetched_at": _fmt(last_fetched),
-        "by_day": [{"date": str(r.day), "count": r.count} for r in by_day_rows],
-        "by_category": [{"tag": r.tag, "count": r.count} for r in by_category_rows],
-    }
+    读 Redis 缓存（每日管道链尾刷新），未命中现算回填——数据总览每次进页不再重复跑聚合查询。
+    """
+    return get_news_stats()
 
 
 @router.get("/articles/{article_id}")
