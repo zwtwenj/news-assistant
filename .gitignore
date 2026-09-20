@@ -30,3 +30,6 @@ backend/media/
 plan.md
 docs/
 backend/data/
+
+# ===== 检索评测工作区（本地资产，不入库） =====
+eval/
