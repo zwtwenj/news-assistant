@@ -134,6 +134,51 @@ def _plan(target_minutes: int) -> dict[str, Any]:
 # 话题→标签映射已迁移至 query_understanding.py（两层 query 理解）
 
 
+_RELEVANCE_PROMPT = """你是新闻编辑，判断检索到的新闻素材能否支撑用户话题的播客生成。
+
+用户话题：{topic}
+
+检索到的素材（标题列表）：
+{titles}
+
+判断标准（从严）：
+- "sufficient"：至少 1 篇素材直接讨论了话题提到的同一事件/政策/人物/领域
+- "partial"：素材讨论的话题与用户话题有明确交集（如同一政策的不同方面、同一行业的不同事件），
+  播客可以围绕交集内容展开
+- "reject"：素材只是同类目/同大类，没有讨论用户话题的具体内容——
+  例如用户问"量子纠缠"，检索到的是一般科技新闻；用户问"台风摩羯"，检索到的是气象政策
+
+注意：仅仅"都属于科技领域"或"都是国内新闻"不构成 partial——必须有内容层面的交集。
+
+只输出 JSON：{{"verdict": "sufficient/partial/reject", "reason": "15字内"}}"""
+
+
+def _check_material_relevance(topic: str, hits: list[dict[str, Any]]) -> str:
+    """相关性门禁：LLM 判断素材能否支撑话题。
+
+    返回 sufficient/partial/reject；reject 由调用方阻断生成。
+    失败默认 sufficient（不挡主流程——门禁自身不能成为单点故障）。
+    """
+    if not hits:
+        return "reject"
+    titles = "\n".join(f"- 《{h.get('title', '')[:50]}》" for h in hits[:5])
+    try:
+        resp = gateway.chat(
+            "zhipu",
+            messages=[{"role": "user", "content": _RELEVANCE_PROMPT.format(
+                topic=topic, titles=titles)}],
+            response_format={"type": "json_object"},
+            max_tokens=50,
+            temperature=0.0,
+        )
+        raw = json.loads(resp.choices[0].message.content or "{}")
+        verdict = str(raw.get("verdict", "")).lower()
+        return verdict if verdict in ("sufficient", "partial", "reject") else "sufficient"
+    except Exception:  # noqa: BLE001
+        logger.opt(exception=True).warning("相关性门禁失败，默认放行")
+        return "sufficient"
+
+
 def _hyde_doc(topic: str) -> str | None:
     """HyDE：让 LLM 写一段假设性新闻导语（新闻体语言域），作为第二检索 query。
 
@@ -298,6 +343,16 @@ def generate_script(
     hits, intent = _search_materials(topic_prompt, plan["top_k"], intent=intent_in)
     if not hits:
         raise ScriptError("素材不足，无法为你生成播客：近期新闻库中没有与话题相关的内容")
+
+    # ── 相关性门禁：素材"在题"≠"相关"，LLM 判断能否支撑话题 ──
+    relevance = _check_material_relevance(topic_prompt, hits[: plan["top_k"]])
+    if relevance == "reject":
+        raise ScriptError(
+            f"新闻库暂无与「{topic_prompt[:20]}」直接相关的报道，"
+            "建议换个话题或等更多相关新闻入库后再试"
+        )
+    # partial 时不阻断，但在素材块前加提醒（LLM 会自然告知听众素材范围有限）
+
     template_block = _template_block(intent.template)
 
     materials = _load_material_text(hits, plan["top_k"])
