@@ -1,4 +1,11 @@
-"""聊天工具集：今日新闻分页 / 标签向量匹配 / 博查联网搜索 / 图片分析。"""
+"""聊天工具集 v3（2026-09 重构）：全部读 articles_v3，封闭类目替代标签。
+
+工具一览：
+- list_news_v3：最新新闻分页 + 类目过滤（替代旧 list_today_news + match_similar_tags 两步联动）
+- search_news_v3：hybrid 语义检索（dense+BM25 加权融合 → rerank，替代旧 search_news_library）
+- web_search_news：博查联网搜索（不变）
+- analyze_image：Qwen-VL 看图（不变）
+"""
 
 import time
 from datetime import UTC, datetime, timedelta
@@ -36,32 +43,34 @@ def get_image(image_id: str) -> dict | None:
 
 # ---------- 工具实现 ----------
 
-def list_today_news(page: int = 1, tag: str = "") -> dict:
-    """按日查 PG 新闻，分页 10 条/页。tag 可选精确过滤（jsonb 包含）。
+def list_news_v3(page: int = 1, category: str = "") -> dict:
+    """最新新闻分页（读 articles_v3），可选类目过滤（主类 or 副类命中）。
 
-    与标签匹配工具联动：LLM 先用 match_similar_tags 拿到相关标签，再以 tag 调本工具。
-    时间窗自适应：镜像源发布时间滞后一天（凌晨抓到的是前一天傍晚内容），
-    傍晚时 24h 窗口必然漏空——不足 3 条自动放宽到 72h，并把实际窗口返回给 LLM 如实描述。
+    时间窗自适应：不足 3 条自动放宽 24h → 72h，把实际窗口返回给 LLM 如实描述。
     """
     page = max(1, page)
-    tag_filter = ""
-    if tag:
-        tag_filter = "AND tags @> CAST(:tag AS jsonb)"
+    cat_filter = ""
+    params_extra: dict[str, Any] = {}
+    if category:
+        cat_filter = "AND (category = :cat OR aux_categories @> CAST(:cat_arr AS jsonb))"
+        params_extra = {"cat": category, "cat_arr": f'["{category}"]'}
     sql = text(
         f"""
-        SELECT id, title, url, source, tags, publish_time
-        FROM articles
+        SELECT id, title, url, source, category, publish_time
+        FROM articles_v3
         WHERE deleted_at IS NULL AND fetch_status = 'succeeded'
-          AND publish_time >= :since {tag_filter}
+          AND (content_quality IS NULL OR content_quality <> 'bad')
+          AND publish_time >= :since {cat_filter}
         ORDER BY publish_time DESC, id DESC
         LIMIT :limit OFFSET :offset
         """
     )
     count_sql = text(
         f"""
-        SELECT count(*) FROM articles
+        SELECT count(*) FROM articles_v3
         WHERE deleted_at IS NULL AND fetch_status = 'succeeded'
-          AND publish_time >= :since {tag_filter}
+          AND (content_quality IS NULL OR content_quality <> 'bad')
+          AND publish_time >= :since {cat_filter}
         """
     )
     total, window_hours = 0, 24
@@ -70,37 +79,43 @@ def list_today_news(page: int = 1, tag: str = "") -> dict:
             "since": datetime.now(UTC) - timedelta(hours=window_hours),
             "limit": PAGE_SIZE,
             "offset": (page - 1) * PAGE_SIZE,
+            **params_extra,
         }
-        if tag:
-            params["tag"] = f'["{tag}"]'
         with SessionLocal() as db:
             total = db.execute(count_sql, params).scalar() or 0
             if total >= 3 or window_hours == 72:
                 rows = db.execute(sql, params).all()
                 break
+
+    from zoneinfo import ZoneInfo
+
+    def _fmt(dt) -> str:
+        if dt.tzinfo is None:
+            from datetime import UTC as _UTC
+
+            dt = dt.replace(tzinfo=_UTC)
+        return dt.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%m-%d %H:%M")
+
     items = [
         {
-            "id": r[0],
-            "title": r[1],
-            "url": r[2],
-            "source": r[3],
-            "tags": r[4] or [],
-            "publish_time": r[5].strftime("%m-%d %H:%M") if r[5] else "",
+            "id": r.id,
+            "title": r.title,
+            "url": r.url,
+            "source": r.source,
+            "category": r.category or "未分类",
+            "publish_time": _fmt(r.publish_time),
         }
         for r in rows
     ]
     has_more = page * PAGE_SIZE < total
     return {
-        "page": page,
-        "total": total,
-        "window_hours": window_hours,
-        "has_more": has_more,
-        "items": items,
+        "total": total, "page": page, "window_hours": window_hours,
+        "has_more": has_more, "items": items,
     }
 
 
-def search_news_library(query: str, top_k: int = 5) -> dict:
-    """新闻库语义检索（复用播客 RAG 链路：understand_topic→双路召回→rerank→回表）。"""
+def search_news_v3(query: str, top_k: int = 5) -> dict:
+    """hybrid 语义检索（dense+BM25 加权融合 → rerank → 回表 articles_v3）。"""
     from app.services.chat import rag as rag_svc
 
     sources = rag_svc.retrieve(query, top_k=top_k)
@@ -112,20 +127,13 @@ def search_news_library(query: str, top_k: int = 5) -> dict:
             {
                 "title": s["title"],
                 "url": s["url"],
+                "category": s.get("category"),
                 "material": s["material"],
                 "score": s["rerank_score"],
             }
             for s in sources
         ],
     }
-
-
-def match_similar_tags(query: str) -> dict:
-    """标签向量匹配：query 与词表标签余弦 ≥ 阈值的相似标签（复用播客检索的匹配器）。"""
-    from app.services.news.vocabulary import match_tags
-
-    tags = match_tags(query)
-    return {"query": query, "matched_tags": tags}
 
 
 def web_search_news(query: str, count: int = 5) -> dict:
@@ -166,8 +174,8 @@ def analyze_image(image_id: str, question: str) -> dict:
     s = get_settings()
     try:
         resp = httpx.post(
-            f"{s.dashscope_base_url.rstrip('/').removesuffix('/compatible-mode/v1')}"
-            "/compatible-mode/v1/chat/completions",
+            s.dashscope_base_url.rstrip("/").removesuffix("/compatible-mode/v1")
+            + "/compatible-mode/v1/chat/completions",
             headers={"Authorization": f"Bearer {s.dashscope_api_key}"},
             json={
                 "model": "qwen-vl-plus",
@@ -175,68 +183,48 @@ def analyze_image(image_id: str, question: str) -> dict:
                     {
                         "role": "user",
                         "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{item['mime']};base64,{item['b64']}"
-                                },
-                            },
-                            {"type": "text", "text": question or "描述这张图片的内容"},
+                            {"type": "image_url", "image_url": {
+                                "url": f"data:{item['mime']};base64,{item['b64']}"
+                            }},
+                            {"type": "text", "text": question},
                         ],
                     }
                 ],
             },
             timeout=60,
         )
-        data = resp.json()
-        answer = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
-        if not answer:
-            raise ValueError(f"VL 响应异常: {str(data)[:120]}")
+        resp.raise_for_status()
+        answer = resp.json()["choices"][0]["message"]["content"]
         return {"answer": answer}
     except Exception as exc:  # noqa: BLE001
-        logger.opt(exception=True).warning("analyze_image fail: {}", str(exc)[:80])
-        return {"error": f"图片分析失败: {str(exc)[:80]}"}
+        logger.opt(exception=True).warning("image analyze fail: {}", str(exc)[:80])
+        return {"error": f"图片分析失败: {str(exc)[:60]}"}
 
 
 # ---------- schema 与分发 ----------
-
-SEARCH_NEWS_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "search_news_library",
-        "description": (
-            "在新闻库中按主题语义检索相关新闻（返回标题/正文节选/来源链接）。"
-            "用户询问某主题的相关报道、事件背景、新闻细节时使用；"
-            "只是想看最新新闻列表时用 list_today_news。结果要注明来源标题。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "检索主题，如'民营经济政策'"},
-            },
-            "required": ["query"],
-        },
-    },
-}
 
 TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
-            "name": "list_today_news",
+            "name": "list_news_v3",
             "description": (
-                "查询新闻库中最近的新闻列表（24 小时窗口，条目不足自动放宽到 72 小时，"
-                "结果带 window_hours 字段，表述时按实际窗口说'最近24/72小时'），每页 10 条。"
-                "用户想看最新/今日新闻时使用；用户说'还有吗/继续'时传 page+1；"
-                "可以传 tag 只看某类新闻（需先用 match_similar_tags 获取合法标签）。"
+                "查询最新新闻列表（24h 窗口，不足自动放宽到 72h，结果带 window_hours，"
+                "表述时按实际窗口说'最近24/72小时'），每页 10 条，带类目标签。"
+                "用户想看最新/今日新闻时使用；说'还有吗/继续'时传 page+1；"
+                "想看某类新闻时传 category。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "page": {"type": "integer", "description": "页码，从 1 开始", "default": 1},
-                    "tag": {
+                    "category": {
                         "type": "string",
-                        "description": "可选，按标签精确过滤（如 '气象'）",
+                        "description": (
+                            "可选，按封闭类目过滤。合法值：时政国内/国际/财经/科技/体育/"
+                            "娱乐/社会/军事/法治/教育/文化/健康/汽车/就业社保/农业农村/"
+                            "消费/气象灾害"
+                        ),
                         "default": "",
                     },
                 },
@@ -246,22 +234,20 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
-            "name": "match_similar_tags",
+            "name": "search_news_v3",
             "description": (
-                "把用户的主题描述匹配成新闻库的标签（向量相似度）。"
-                "用户问某类主题（如'自然灾害''体育赛事'）时，先用本工具拿到相关标签，"
-                "再用 list_today_news(tag=...) 联动查询。"
+                "在新闻库中按主题语义检索相关新闻（返回标题/正文节选/类目/来源链接）。"
+                "用户询问某主题的相关报道、事件背景、新闻细节时使用。结果要注明来源标题。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "主题描述，如'自然灾害'"}
+                    "query": {"type": "string", "description": "检索主题，如'民营经济政策'"},
                 },
                 "required": ["query"],
             },
         },
     },
-    SEARCH_NEWS_SCHEMA,
     {
         "type": "function",
         "function": {
@@ -287,7 +273,8 @@ TOOLS_SCHEMA = [
                 "type": "object",
                 "properties": {
                     "question": {
-                        "type": "string", "description": "想了解图片的什么，如'这是什么地方'"
+                        "type": "string",
+                        "description": "想了解图片的什么，如'这是什么地方'",
                     },
                 },
             },
@@ -298,12 +285,12 @@ TOOLS_SCHEMA = [
 
 def execute_tool(name: str, args: dict, image_id: str | None = None) -> dict:
     """统一分发。analyze_image 的 image_id 由请求注入（防并发串图）。"""
-    if name == "list_today_news":
-        return list_today_news(page=int(args.get("page", 1)), tag=str(args.get("tag", "")))
-    if name == "search_news_library":
-        return search_news_library(str(args.get("query", "")))
-    if name == "match_similar_tags":
-        return match_similar_tags(str(args.get("query", "")))
+    if name == "list_news_v3":
+        return list_news_v3(
+            page=int(args.get("page", 1)), category=str(args.get("category", ""))
+        )
+    if name == "search_news_v3":
+        return search_news_v3(str(args.get("query", "")))
     if name == "web_search_news":
         return web_search_news(str(args.get("query", "")))
     if name == "analyze_image":
