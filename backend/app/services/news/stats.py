@@ -31,10 +31,16 @@ def _fmt(dt) -> str | None:  # noqa: ANN001
 
 
 def compute_news_stats(db: Session) -> dict:
-    """聚合查询本体：总量/阶段状态/每日入库/分类分布/per-feed 源明细。"""
-    base = Article.deleted_at.is_(None)
+    """聚合查询本体：合格总量/阶段状态/每日入库/分类分布/per-feed 源明细。
 
-    total = db.query(func.count(Article.id)).filter(base).scalar() or 0
+    total 口径 = 合格可读（与新闻列表一致）：未删除 + 抓取成功 + 未被质检判 bad。
+    """
+    base = Article.deleted_at.is_(None)
+    ok = base & (Article.fetch_status == "succeeded") & (
+        Article.content_quality.is_(None) | (Article.content_quality != "bad")
+    )
+
+    total = db.query(func.count(Article.id)).filter(ok).scalar() or 0
     feeds = (
         db.query(func.count(Feed.id))
         .filter(Feed.enabled.is_(True), Feed.deleted_at.is_(None))
@@ -60,7 +66,7 @@ def compute_news_stats(db: Session) -> dict:
             "FROM generate_series("
             "  (now() AT TIME ZONE 'Asia/Shanghai')::date - INTERVAL '13 days',"
             "  (now() AT TIME ZONE 'Asia/Shanghai')::date, '1 day') AS d "
-            "LEFT JOIN articles a "
+            "LEFT JOIN articles_v3 a "
             "  ON (a.created_at AT TIME ZONE 'Asia/Shanghai')::date = d::date "
             "  AND a.deleted_at IS NULL "
             "GROUP BY d ORDER BY d"
@@ -70,7 +76,7 @@ def compute_news_stats(db: Session) -> dict:
     # 分类分布（tags jsonb 展开计数，只统计打标成功的）
     by_category_rows = db.execute(
         text(
-            "SELECT tag, COUNT(*) AS count FROM articles, "
+            "SELECT tag, COUNT(*) AS count FROM articles_v3, "
             "jsonb_array_elements_text(tags) AS tag "
             "WHERE deleted_at IS NULL AND ai_status = 'succeeded' "
             "GROUP BY tag ORDER BY count DESC LIMIT 12"
@@ -88,7 +94,7 @@ def compute_news_stats(db: Session) -> dict:
                      = (now() AT TIME ZONE 'Asia/Shanghai')::date) AS today,
                    MAX(a.source) AS sample_source
             FROM feeds f
-            LEFT JOIN articles a ON a.feed_id = f.id AND a.deleted_at IS NULL
+            LEFT JOIN articles_v3 a ON a.feed_id = f.id AND a.deleted_at IS NULL
             WHERE f.deleted_at IS NULL AND f.enabled
             GROUP BY f.id, f.name, f.enabled, f.last_fetched_at
             ORDER BY total DESC
