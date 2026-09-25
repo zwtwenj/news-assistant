@@ -24,7 +24,7 @@ COLS = (
 def main() -> None:
     t0 = time.time()
     with SessionLocal() as db:
-        src = db.execute(text(f"SELECT COUNT(*) FROM articles")).scalar()
+        src = db.execute(text("SELECT COUNT(*) FROM articles")).scalar()
         dst = db.execute(text("SELECT COUNT(*) FROM articles_v3")).scalar()
         print(f"源表 articles={src} 行，目标 articles_v3={dst} 行")
         # 幂等：只补新 id（ON CONFLICT 跳过）

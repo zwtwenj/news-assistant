@@ -46,8 +46,10 @@ def upgrade() -> None:
         sa.Column("embed_attempts", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("embed_error", sa.Text()),
         sa.Column("deleted_at", sa.DateTime(timezone=True)),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.func.now()),
         sa.Column("content_quality", sa.String(10)),
     )
     # 复刻 articles 的关键索引（列表查询/去重/worker 状态扫全部走原形状）
