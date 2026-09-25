@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.redis_client import redis_client
 from app.db.session import SessionLocal
-from app.models.article import Article
+from app.models.article_v3 import ArticleV3 as Article  # 数据总览读 articles_v3
 from app.models.feed import Feed
 
 STATS_KEY = "news:stats"
