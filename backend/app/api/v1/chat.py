@@ -129,10 +129,21 @@ def chat(body: ChatRequest, user: CurrentUser) -> StreamingResponse:
                 "memories": [m["summary"] for m in memories],
             })
 
-            # ⑤ LLM 流式 + 工具循环
+            # ⑤ LLM 流式 + 工具循环（ReAct：Think→Act→Observe，≤3 轮）
             answer = ""
             usage = {}
             for _round in range(MAX_TOOL_ROUNDS + 1):
+                # 最后一轮前提醒 LLM 收尾（要么给出答案要么诚实说找不到）
+                if _round == MAX_TOOL_ROUNDS:
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            "⚠️ 这是你最后一次工具调用机会。"
+                            "如果前面的检索都没有找到有效结果，请直接诚实告知用户"
+                            "「当前新闻数据可能无法满足你的要求，请尝试换个问法或更具体地描述」，"
+                            "不要再调用工具了。"
+                        ),
+                    })
                 stream = chat_client.stream_chat(
                     msgs, tools=tools_svc.TOOLS_SCHEMA
                 )
@@ -183,8 +194,25 @@ def chat(body: ChatRequest, user: CurrentUser) -> StreamingResponse:
                     except json.JSONDecodeError:
                         args = {}
                     result = tools_svc.execute_tool(c["name"], args, image_id=body.image_id)
+
+                    # ── 观察反馈（ReAct Observe）：空结果注入策略提示，帮 LLM 自纠 ──
+                    if isinstance(result, dict):
+                        is_empty = (
+                            result.get("found") is False
+                            or not result.get("items")
+                            or not result.get("results")
+                            or result.get("available") is False
+                        )
+                        if is_empty and _round < MAX_TOOL_ROUNDS:
+                            result["_hint"] = (
+                                "⚠️ 本次检索未找到有效结果。建议："
+                                "1) 换个更具体的关键词重新搜索；"
+                                "2) 尝试更泛化的描述（如把具体事件名换成领域词）；"
+                                "3) 如果是最新热点，试试联网搜索 web_search_news。"
+                            )
+
                     tool_event: dict = {"type": "tool", "name": c["name"], "result": result}
-                    if c["name"] == "search_news_library" and result.get("found"):
+                    if c["name"] == "search_news_v3" and result.get("found"):
                         tool_event["rag_sources"] = [
                             {"title": r["title"], "url": r["url"], "score": r["score"]}
                             for r in result["results"]
@@ -196,6 +224,15 @@ def chat(body: ChatRequest, user: CurrentUser) -> StreamingResponse:
                         "content": json.dumps(result, ensure_ascii=False)[:6000],
                     })
                 answer = ""
+
+            # ── 兜底：3 轮工具循环后仍无有效回答 ──
+            if not answer.strip() or len(answer.strip()) < 5:
+                fallback = (
+                    "抱歉，当前新闻数据可能无法满足你的要求。"
+                    "请尝试换个问法，或更具体地描述你想了解的内容。"
+                )
+                answer = fallback
+                yield _sse({"type": "delta", "content": fallback})
 
             # ⑥ 写记忆（下一轮可召回）
             if answer or msgs:
