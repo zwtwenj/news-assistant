@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, refactor/hybrid-retrieval]
   pull_request:
 
 jobs:
