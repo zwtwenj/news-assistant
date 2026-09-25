@@ -174,3 +174,99 @@ def list_articles(
             ) in rows
         ],
     }
+
+
+@router.get("/v3/articles")
+def list_articles_v3(
+    db: DB,
+    _user: CurrentUser,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    keyword: str = Query("", max_length=100),
+    category: str = Query("", max_length=32),
+    source: str = Query("", max_length=200),
+    quality: str = Query("ok", pattern="^(ok|bad)$"),
+) -> dict:
+    """【v3 并行迁移版】新闻列表：读 articles_v3 新表，带封闭类目。
+
+    与老接口 /news/articles 的差异：① 数据源为新表（迁移脚本从 articles 幂等同步）
+    ② 响应含 category/aux_categories，tags 字段保留（展示兼容）③ 新增 category 精确筛选。
+    老接口不动，前端切换后再退役老接口。
+    """
+    from app.models.article_v3 import ArticleV3
+
+    q = db.query(ArticleV3).filter(ArticleV3.deleted_at.is_(None))
+    ok_condition = (
+        ArticleV3.fetch_status == "succeeded",
+        or_(ArticleV3.content_quality.is_(None), ArticleV3.content_quality != "bad"),
+    )
+    if quality == "ok":
+        q = q.filter(*ok_condition)
+    else:
+        bad_condition = or_(
+            ArticleV3.content_quality == "bad",
+            ArticleV3.fetch_status.in_(["failed", "skipped"]),
+        )
+        q = q.filter(~and_(*ok_condition), bad_condition)
+    if keyword.strip():
+        like = f"%{keyword.strip()}%"
+        q = q.filter(or_(ArticleV3.title.ilike(like), ArticleV3.content.ilike(like)))
+    if category.strip():
+        # 主类或副类命中（综述浏览口径）
+        q = q.filter(or_(ArticleV3.category == category.strip(),
+                         ArticleV3.aux_categories.contains([category.strip()])))
+    if source.strip():
+        q = q.filter(ArticleV3.source == source.strip())
+    total = q.count()
+    rows = (
+        q.with_entities(
+            ArticleV3.id,
+            ArticleV3.title,
+            ArticleV3.source,
+            ArticleV3.publish_time,
+            func.coalesce(ArticleV3.summary, func.left(ArticleV3.content, 100), ""),
+            ArticleV3.tags,
+            ArticleV3.category,
+            ArticleV3.aux_categories,
+            ArticleV3.url,
+            ArticleV3.content_quality,
+            ArticleV3.fetch_error,
+            ArticleV3.ai_error,
+        )
+        .order_by(ArticleV3.publish_time.desc().nulls_last(), ArticleV3.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    def _fmt(dt) -> str:
+        from zoneinfo import ZoneInfo
+
+        return dt.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M") if dt else ""
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [
+            {
+                "id": id_,
+                "title": title,
+                "source": source,
+                "publish_time": _fmt(publish_time),
+                "summary": summary,
+                "tags": tags or [],
+                "category": category,
+                "aux_categories": aux or [],
+                "url": url,
+                "content_quality": content_quality,
+                "fail_reason": fetch_error or ai_error or (
+                    "存量质检回填（未记录具体原因）" if content_quality == "bad" else None
+                ),
+            }
+            for (
+                id_, title, source, publish_time, summary, tags,
+                category, aux, url, content_quality, fetch_error, ai_error,
+            ) in rows
+        ],
+    }
