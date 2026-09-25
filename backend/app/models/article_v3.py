@@ -16,6 +16,7 @@ PENDING = "pending"
 SUCCEEDED = "succeeded"
 FAILED = "failed"
 SKIPPED = "skipped"
+MAX_ATTEMPTS = 3
 
 
 class ArticleV3(Base):

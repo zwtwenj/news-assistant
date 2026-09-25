@@ -22,13 +22,15 @@ from sqlalchemy.orm import Session
 
 from app.core.redis_client import redis_client
 from app.db.session import SessionLocal
-from app.models.article import (
+from app.models.article_v3 import (
     FAILED,
     MAX_ATTEMPTS,
     PENDING,
     SKIPPED,
     SUCCEEDED,
-    Article,
+)
+from app.models.article_v3 import (
+    ArticleV3 as Article,  # 管道全阶段读写 articles_v3（并行迁移）
 )
 from app.models.feed import Feed
 from app.services.alert import send_alert
