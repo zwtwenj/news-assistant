@@ -33,6 +33,7 @@ from app.models.article import (
 from app.models.feed import Feed
 from app.services.alert import send_alert
 from app.services.news import analyzer as analyzer_svc
+from app.services.news import categories as categories_svc
 from app.services.news import extractor as extractor_svc
 from app.services.news import quality as quality_svc
 from app.services.news import rss as rss_svc
@@ -276,6 +277,10 @@ def analyze_articles(self) -> str:
             if result is not None:
                 a.summary = result["summary"]
                 a.tags = result["tags"]
+                # 封闭类目（检索路由层）：白名单校验在分类器内部，失败降 other 不阻断
+                cat = categories_svc.classify_article(a.title, a.content)
+                a.category = cat["category"]
+                a.aux_categories = cat["aux_categories"] or None
                 a.ai_status = SUCCEEDED
                 a.ai_error = None
                 ok += 1
@@ -360,9 +365,11 @@ def _upsert_batch(db: Session, batch: list[Article]) -> int:
             "title": a.title,
             "summary": a.summary or "",
             "content": a.content,
-            "tags": a.tags or [],
+            "category": a.category or "other",
+            "aux_categories": a.aux_categories or [],
             "publish_ts": a.publish_time.timestamp(),
             "url": a.url,
+            "source": a.source,
         }
         for a in batch
     ]

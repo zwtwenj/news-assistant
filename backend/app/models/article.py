@@ -28,6 +28,10 @@ class Article(Base):
 
     summary: Mapped[str | None] = mapped_column(Text)  # LLM 摘要
     tags: Mapped[list | None] = mapped_column(JSONB)
+    # 封闭类目（检索路由层）：主类 18 选 1（白名单校验）+ 副类 ≤2
+    # 与 tags 分工：tags=展示/统计；category=综述型检索的过滤主键
+    category: Mapped[str | None] = mapped_column(String(32), index=True)
+    aux_categories: Mapped[list | None] = mapped_column(JSONB)
 
     # 入库质量门禁：null=未检 / good / suspect / bad（bad 不向量化，plan 质量四层防御）
     content_quality: Mapped[str | None] = mapped_column(String(10))

@@ -18,6 +18,7 @@ from sqlalchemy import select
 from app.db.session import SessionLocal
 from app.models.article import Article
 from app.services.llm.gateway import gateway
+from app.services.news import categories as categories_svc
 from app.services.news import vector as vector_svc
 from app.services.podcast import voices as voices_svc
 from app.services.podcast.query_understanding import TopicIntent, understand_topic
@@ -133,44 +134,65 @@ def _plan(target_minutes: int) -> dict[str, Any]:
 # 话题→标签映射已迁移至 query_understanding.py（两层 query 理解）
 
 
+def _hyde_doc(topic: str) -> str | None:
+    """HyDE：让 LLM 写一段假设性新闻导语（新闻体语言域），作为第二检索 query。
+
+    实验（eval/eval_hyde.py）：单用伤排序、融合提召回（miss 6→2），只做副路。
+    失败返回 None 不影响主路。
+    """
+    try:
+        resp = gateway.chat(
+            "zhipu",
+            messages=[{"role": "user", "content": (
+                "你是新闻编辑。根据话题写一段【假设存在的新闻导语】，模仿大陆时政/财经通讯社"
+                "风格（新华社腔调），120~180 字，含具体事实要素（谁/领域/动作/数字量级，"
+                "可合理虚构）。只输出导语正文。\n\n话题：" + topic
+            )}],
+            max_tokens=300,
+            temperature=0.3,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        return text or None
+    except Exception:  # noqa: BLE001
+        logger.opt(exception=True).warning("HyDE 生成失败，走单 query 检索")
+        return None
+
+
 def _search_materials(
     topic: str, top_k: int, intent: TopicIntent | None = None
 ) -> tuple[list[dict[str, Any]], TopicIntent]:
-    """检索素材（三段式）：query 理解 → 双路召回 → rerank 精排。
+    """检索素材（2026-09 重构：按 query 类型分流，实验结论见 eval/ 报告）。
 
-    ① intent 已由创建流程产出（title/rag_query/template 随播客入库）时直接使用，
-       不再重复调 LLM；为 None（兼容直调/旧数据）才在内部 understand_topic
-    ② 双路召回（各 top_k×3，阈值过滤后合并去重）：
-       - 标签路：tags_any 过滤的语义检索（保证主题覆盖，词表命中时才走）
-       - 语义路：无过滤纯语义检索（防标签过滤误伤，泛话题的主力）
-    ③ gte-rerank-v2 统一精排：精排分降序为主，新鲜度次级排序
+    ① intent 仍由创建流程产出（template 脚本风格路由保留）；检索侧不再使用
+       rag_query/intent_tags（关键词化重写实验负收益、标签路 61% miss 定论）
+    ② 综述型（detect_macro 命中封闭类目）→ 类目硬过滤 + 时间窗自动放宽
+    ③ 具体型 → 原始 topic（排序最优）+ HyDE 副路 → dense+BM25 hybrid RRF → rerank
     返回 (命中列表 ≤ top_k+2 备选, 完整 TopicIntent)；0 命中由调用方拒绝。
     """
     if intent is None:
         intent = understand_topic(topic)
     week_ago = int(time.time()) - SEARCH_DAYS * 86400
-    recall_k = top_k * 3
+    recall_k = top_k * 4
 
-    def _recall(tags_any: list[str] | None) -> list[dict[str, Any]]:
-        hits = vector_svc.search(
-            intent.query, top_k=recall_k, publish_after_ts=week_ago, tags_any=tags_any
-        )
-        return [h for h in hits if h["score"] >= MIN_SCORE]
+    macro = categories_svc.detect_macro(topic)
+    if macro:
+        hits = vector_svc.search_by_category(macro, topic, top_k=recall_k)
+        logger.info("综述型检索 category={} 命中 {}", macro, len(hits))
+        if hits:
+            return hits[: top_k + 2], intent
+        # 类目内空（罕见）：落到具体型管道兜底
 
-    candidates: dict[int, dict[str, Any]] = {}
-    if intent.tags:
-        for h in _recall(intent.tags):
-            candidates[h["article_id"]] = h
-    for h in _recall(None):  # 语义路总是执行：双路互补，标签过滤误伤时兜底
-        candidates.setdefault(h["article_id"], h)
-    merged = list(candidates.values())
-    logger.info(
-        "双路召回 via={} tags={} 合并候选 {}", intent.via, intent.tags, len(merged)
+    queries = _hyde_doc(topic)
+    hits = vector_svc.hybrid_search(
+        topic, top_k=recall_k, publish_after_ts=week_ago,
+        extra_queries=[queries] if queries else None,
     )
-    if not merged:
+    hits = [h for h in hits if h["score"] >= MIN_SCORE]
+    logger.info("具体型 hybrid 检索（{}query）命中 {}", 2 if queries else 1, len(hits))
+    if not hits:
         return [], intent
 
-    reranked = vector_svc.rerank(intent.query, merged)
+    reranked = vector_svc.rerank(topic, hits)
     # 精排分为主、新鲜度为辅（相关优先，7 天窗口已保证时效下限）
     reranked.sort(
         key=lambda h: (h.get("rerank_score") or 0, h["publish_ts"]), reverse=True
@@ -284,7 +306,7 @@ def generate_script(
         {
             "article_id": h["article_id"],
             "title": h["title"][:60],
-            "tags": h.get("tags") or [],
+            "category": h.get("category"),
             "recall_score": round(h["score"], 3),
             "rerank_score": round(h.get("rerank_score") or 0, 3),
         }

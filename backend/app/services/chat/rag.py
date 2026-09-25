@@ -1,7 +1,7 @@
-"""聊天 RAG：多轮指代消解 + 复用播客检索链路（双路召回 → rerank → 回表）。
+"""聊天 RAG：多轮指代消解 + hybrid 检索（dense+BM25 → rerank → 回表）。
 
-retrieve 与播客 _search_materials 同一套筛选方式（understand_topic 的标签
-向量匹配 + 语义双路 + gte-rerank 精排），保证聊天与播客的内容口径一致。
+2026-09 重构：与播客检索同步切换到 hybrid（标签路已证伪退役）。
+聊天 query 是用户直接问句（非主播话题），不走 HyDE/类目路由，纯 hybrid。
 """
 
 import json
@@ -15,7 +15,6 @@ from app.db.session import SessionLocal
 from app.models.article import Article
 from app.services.llm.gateway import gateway
 from app.services.news import vector as vector_svc
-from app.services.podcast.query_understanding import understand_topic
 
 SEARCH_DAYS = 7
 MIN_SCORE = 0.15  # 与播客检索一致
@@ -71,30 +70,18 @@ def rewrite_query(history: list[dict], query: str) -> tuple[str, str | None]:
 
 
 def retrieve(query: str, top_k: int = RAG_TOP_K) -> list[dict[str, Any]]:
-    """播客同款检索：understand_topic → 双路召回（标签路+语义路）→ rerank → 回表。
+    """hybrid 检索（dense 语义 + BM25 字面 RRF 融合）→ rerank → 回表。
 
-    返回 [{title, url, tags, score, rerank_score, material}]；空 = 语料无相关内容。
+    返回 [{title, url, category, score, rerank_score, material}]；空 = 语料无相关内容。
     """
-    intent = understand_topic(query)
     week_ago = int(time.time()) - SEARCH_DAYS * 86400
-    recall_k = top_k * 3
-
-    def _recall(tags_any: list[str] | None) -> list[dict[str, Any]]:
-        hits = vector_svc.search(
-            intent.query, top_k=recall_k, publish_after_ts=week_ago, tags_any=tags_any
-        )
-        return [h for h in hits if h["score"] >= MIN_SCORE]
-
-    candidates: dict[int, dict[str, Any]] = {}
-    if intent.tags:  # 标签路
-        for h in _recall(intent.tags):
-            candidates[h["article_id"]] = h
-    for h in _recall(None):  # 语义路总执行
-        candidates.setdefault(h["article_id"], h)
-    if not candidates:
+    hits = vector_svc.hybrid_search(
+        query, top_k=top_k * 3, publish_after_ts=week_ago, threshold=MIN_SCORE
+    )
+    if not hits:
         return []
 
-    reranked = vector_svc.rerank(intent.query, list(candidates.values()))
+    reranked = vector_svc.rerank(query, hits)
     reranked.sort(key=lambda h: (h.get("rerank_score") or 0), reverse=True)
 
     ids = [h["article_id"] for h in reranked[:top_k]]
@@ -111,7 +98,7 @@ def retrieve(query: str, top_k: int = RAG_TOP_K) -> list[dict[str, Any]]:
             {
                 "title": a.title,
                 "url": a.url,
-                "tags": a.tags or [],
+                "category": a.category,
                 "score": round(h["score"], 3),
                 "rerank_score": round(h.get("rerank_score") or 0, 3),
                 "material": _excerpt(a),

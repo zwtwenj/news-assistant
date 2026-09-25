@@ -12,9 +12,16 @@ from app.services.news import vocabulary as vocab_svc
 
 @pytest.fixture
 def clean_words():
-    """记录测试产生的词并在结束后清除（不动 seed 词）。"""
+    """记录测试产生的词并在结束后清除（不动 seed 词）。
+
+    抬高 MAX_WORDS 上限：生产词表已满 300（收录测试会被 room=0 全拒），
+    测试环境须独立于线上词表水位。
+    """
+    real_max = vocab_svc.MAX_WORDS
+    vocab_svc.MAX_WORDS = real_max + 100
     before = set(vocab_svc.get_vocabulary())
     yield
+    vocab_svc.MAX_WORDS = real_max
     db = SessionLocal()
     db.query(TagWord).filter(~TagWord.word.in_(before)).delete(synchronize_session=False)
     db.commit()
