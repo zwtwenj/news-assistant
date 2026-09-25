@@ -270,3 +270,32 @@ def list_articles_v3(
             ) in rows
         ],
     }
+
+
+@router.get("/v3/articles/{article_id}")
+def get_article_v3(article_id: int, db: DB, _user: CurrentUser) -> dict:
+    """【v3】单篇详情：返回全文正文 + 类目。读 articles_v3。"""
+    from app.models.article_v3 import ArticleV3
+
+    a = db.get(ArticleV3, article_id)
+    if a is None or a.deleted_at:
+        raise HTTPException(status_code=404, detail="文章不存在")
+    from datetime import UTC
+    from zoneinfo import ZoneInfo
+
+    publish = ""
+    if a.publish_time:
+        pt = a.publish_time if a.publish_time.tzinfo else a.publish_time.replace(tzinfo=UTC)
+        publish = pt.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
+    return {
+        "id": a.id,
+        "title": a.title,
+        "source": a.source,
+        "publish_time": publish,
+        "summary": a.summary or "",
+        "content": a.content or "",
+        "tags": a.tags or [],
+        "category": a.category,
+        "aux_categories": a.aux_categories or [],
+        "url": a.url,
+    }

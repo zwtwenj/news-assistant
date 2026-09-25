@@ -7,6 +7,7 @@ import { useSearchParams } from "next/navigation";
 import Spinner from "@/components/Spinner";
 import { api } from "@/lib/api";
 
+// ── 类型（v3 接口专属，不做兼容）──
 type Article = {
   id: number;
   title: string;
@@ -14,6 +15,8 @@ type Article = {
   publish_time: string;
   summary: string;
   tags: string[];
+  category: string | null;
+  aux_categories: string[];
   url: string;
   content_quality: string | null;
   fail_reason: string | null;
@@ -28,23 +31,37 @@ type ListResp = {
 
 type ArticleDetail = Article & { content: string };
 
-type TagItem = { tag: string; count: number };
+// ── 封闭类目表（与 backend categories.py 对齐，18 类）──
+const CATEGORIES = [
+  "时政国内", "国际", "财经", "科技", "体育", "娱乐", "社会", "军事",
+  "法治", "教育", "文化", "健康", "汽车", "就业社保", "农业农村",
+  "消费", "气象灾害", "other",
+] as const;
 
-/* 标签 chips 按名称哈希取霓虹色，稳定且无需配置 */
-const CHIP_TONES = [
-  "border-primary/25 bg-primary/[.06] text-primary",
-  "border-[#a78bfa]/30 bg-[#a78bfa]/[.07] text-[#a78bfa]",
-  "border-emerald-400/30 bg-emerald-400/[.06] text-emerald-400",
-  "border-amber-400/30 bg-amber-400/[.06] text-amber-400",
-];
-const chipTone = (tag: string) => {
-  let h = 0;
-  for (const ch of tag) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return CHIP_TONES[h % CHIP_TONES.length];
+/* 类目 chip 色（稳定映射，无需配置） */
+const CAT_TONES: Record<string, string> = {
+  时政国内: "border-red-400/30 bg-red-400/[.06] text-red-400",
+  国际: "border-blue-400/30 bg-blue-400/[.06] text-blue-400",
+  财经: "border-amber-400/30 bg-amber-400/[.06] text-amber-400",
+  科技: "border-cyan-400/30 bg-cyan-400/[.06] text-cyan-400",
+  体育: "border-emerald-400/30 bg-emerald-400/[.06] text-emerald-400",
+  娱乐: "border-fuchsia-400/30 bg-fuchsia-400/[.06] text-fuchsia-400",
+  社会: "border-orange-400/30 bg-orange-400/[.06] text-orange-400",
+  军事: "border-red-500/30 bg-red-500/[.06] text-red-500",
+  法治: "border-violet-400/30 bg-violet-400/[.06] text-violet-400",
+  教育: "border-sky-400/30 bg-sky-400/[.06] text-sky-400",
+  文化: "border-teal-400/30 bg-teal-400/[.06] text-teal-400",
+  健康: "border-lime-400/30 bg-lime-400/[.06] text-lime-400",
+  汽车: "border-indigo-400/30 bg-indigo-400/[.06] text-indigo-400",
+  就业社保: "border-pink-400/30 bg-pink-400/[.06] text-pink-400",
+  农业农村: "border-green-400/30 bg-green-400/[.06] text-green-400",
+  消费: "border-yellow-400/30 bg-yellow-400/[.06] text-yellow-400",
+  气象灾害: "border-blue-500/30 bg-blue-500/[.06] text-blue-500",
+  other: "border-zinc-400/30 bg-zinc-400/[.06] text-zinc-400",
 };
+const catTone = (c: string) => CAT_TONES[c] ?? CAT_TONES.other;
 
 export default function NewsListPage() {
-  // useSearchParams 需要 Suspense 边界（Next 静态预渲染约束）
   return (
     <Suspense fallback={null}>
       <NewsListInner />
@@ -55,46 +72,29 @@ export default function NewsListPage() {
 function NewsListInner() {
   const searchParams = useSearchParams();
   const [data, setData] = useState<ListResp | null>(null);
-  const [keyword, setKeyword] = useState(""); // 输入草稿，回车/点搜索才提交到查询
+  const [keyword, setKeyword] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  // 标签可搜索下拉：候选列表 + 输入过滤 + 开合状态
-  const [tagItems, setTagItems] = useState<TagItem[]>([]);
-  const [tagInput, setTagInput] = useState(""); // 下拉框输入草稿（过滤用）
-  const [tagOpen, setTagOpen] = useState(false);
-  // 查询态：初始值从 URL 参数读取（数据总览跳转 ?failed=1 / ?source=xxx），首次请求即已筛选
+  const [catOpen, setCatOpen] = useState(false);
   const [query, setQuery] = useState(() => ({
     page: 1,
     kw: "",
-    tag: "",
+    category: searchParams.get("category") ?? "",
     source: searchParams.get("source") ?? "",
     failed: searchParams.get("failed") === "1",
     seq: 0,
   }));
-  const seqRef = useRef(0); // 响应序号：仅接受最新一次（丢弃过期响应）
-  const listRef = useRef<HTMLDivElement>(null); // 列表滚动容器（翻页回顶）
+  const seqRef = useRef(0);
+  const listRef = useRef<HTMLDivElement>(null);
 
-  // 主从布局：选中条目 + 详情缓存
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<ArticleDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const detailCache = useRef(new Map<number, ArticleDetail>());
-  const detailSeq = useRef(0); // 防竞态：快速切换时丢弃过期响应
+  const detailSeq = useRef(0);
 
   useEffect(() => {
-    // 标签候选（使用中标签+计数）：一次拉取
-    const t = setTimeout(() => {
-      api<{ items: TagItem[] }>("/news/tags?limit=200")
-        .then((d) => setTagItems(d.items))
-        .catch(() => {});
-    }, 0);
-    return () => clearTimeout(t);
-  }, []);
-
-  useEffect(() => {
-    // 翻页/筛选切换后列表回顶（滚动在列表内部）
     listRef.current?.scrollTo({ top: 0 });
-    // 定时器 + 清理：StrictMode 双调用时第一个被清掉，挂载也只发一次请求
     const timer = setTimeout(() => {
       const seq = ++seqRef.current;
       setLoading(true);
@@ -105,13 +105,12 @@ function NewsListInner() {
         quality: query.failed ? "bad" : "ok",
       });
       if (query.kw.trim()) params.set("keyword", query.kw.trim());
-      if (query.tag) params.set("tag", query.tag);
+      if (query.category) params.set("category", query.category);
       if (query.source) params.set("source", query.source);
-      api<ListResp>(`/news/articles?${params}`)
+      api<ListResp>(`/news/v3/articles?${params}`)
         .then((d) => {
           if (seq === seqRef.current) {
             setData(d);
-            // 选中项不在新结果里时落到第一条（保留翻页/筛选后的有效选中）
             setSelectedId((prev) =>
               d.items.some((i) => i.id === prev) ? prev : (d.items[0]?.id ?? null),
             );
@@ -127,7 +126,6 @@ function NewsListInner() {
     return () => clearTimeout(timer);
   }, [query]);
 
-  // 选中详情：缓存命中直接用，未命中拉单篇全文（序号守卫防快速切换竞态）
   useEffect(() => {
     if (selectedId == null) {
       setDetail(null);
@@ -143,7 +141,7 @@ function NewsListInner() {
     setDetailLoading(true);
     const timer = setTimeout(() => {
       const seq = ++detailSeq.current;
-      api<ArticleDetail>(`/news/articles/${selectedId}`)
+      api<ArticleDetail>(`/news/v3/articles/${selectedId}`)
         .then((d) => {
           if (seq !== detailSeq.current) return;
           detailCache.current.set(selectedId, d);
@@ -157,15 +155,13 @@ function NewsListInner() {
     return () => clearTimeout(timer);
   }, [selectedId]);
 
-  const { page, tag, failed: showFailed } = query;
+  const { page, category, failed: showFailed } = query;
   const setQueryPart = (part: Partial<typeof query>) =>
     setQuery((q) => ({ ...q, page: 1, ...part, seq: q.seq + 1 }));
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.page_size)) : 1;
-
   const search = () => setQueryPart({ kw: keyword });
 
-  // 按发布日期分组：管道每天一批入库，按日分层贴合数据事实
   const groups = useMemo(() => {
     if (!data) return [];
     const key = (d: Date) =>
@@ -177,7 +173,7 @@ function NewsListInner() {
     const yKey = key(y);
     const map = new Map<string, Article[]>();
     for (const a of data.items) {
-      const k = a.publish_time.slice(5, 10); // "MM-DD"（接口返回 YYYY-MM-DD HH:MM）
+      const k = a.publish_time.slice(5, 10);
       if (!map.has(k)) map.set(k, []);
       map.get(k)!.push(a);
     }
@@ -198,7 +194,7 @@ function NewsListInner() {
         </span>
       </div>
 
-      {/* 工具行：搜索 + 标签下拉 + 质检拦截 | 分页（右） */}
+      {/* 工具行：搜索 + 类目下拉 + 质检拦截 | 分页（右） */}
       <div className="flex flex-wrap items-center gap-2.5">
         <div className="relative w-64">
           <Search className="absolute top-2.5 left-3 size-4 text-zinc-600" />
@@ -217,74 +213,61 @@ function NewsListInner() {
         >
           搜索
         </button>
-        {/* 标签筛选：可搜索下拉（词表自生长，标签数量不定） */}
+
+        {/* 类目下拉（封闭 18 类，替代旧标签搜索） */}
         <div className="relative">
-          <input
-            value={tagOpen ? tagInput : tag}
-            onChange={(e) => {
-              setTagInput(e.target.value);
-              setTagOpen(true);
-            }}
-            onFocus={() => {
-              setTagInput("");
-              setTagOpen(true);
-            }}
-            onBlur={() => setTimeout(() => setTagOpen(false), 150)} // 等点选事件先触发
-            placeholder={tag || "按标签筛选"}
-            className={`h-9.5 w-44 rounded-lg border border-solid bg-black/35 px-3 text-[13px] outline-none transition-colors placeholder:text-zinc-600 focus:border-primary focus:ring-[3px] focus:ring-primary/15 ${
-              tag && !tagOpen ? "border-primary/40 text-primary" : "border-input text-foreground"
+          <button
+            type="button"
+            onClick={() => setCatOpen(!catOpen)}
+            className={`flex h-9.5 items-center gap-2 rounded-lg border border-solid px-3 text-[13px] transition-colors ${
+              category
+                ? `${catTone(category)} border-current/40`
+                : "border-input bg-black/35 text-zinc-400 hover:text-zinc-200"
             }`}
-          />
-          {tag && !tagOpen && (
+          >
+            {category || "按类目筛选"}
+            <span className="text-[10px] opacity-60">{catOpen ? "▲" : "▼"}</span>
+          </button>
+          {category && !catOpen && (
             <button
               type="button"
-              onClick={() => setQueryPart({ tag: "" })}
+              onClick={() => setQueryPart({ category: "" })}
               className="absolute top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
-              style={{ insetInlineEnd: 28 }}
-              title="清除标签筛选"
+              style={{ insetInlineEnd: 8 }}
             >
               ✕
             </button>
           )}
-          {tagOpen && (
-            <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-solid border-border bg-popover py-1 shadow-2xl">
-              {tag && (
+          {catOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setCatOpen(false)} />
+              <div className="absolute z-20 mt-1 grid max-h-64 w-64 grid-cols-2 gap-0.5 overflow-y-auto rounded-lg border border-solid border-border bg-popover p-1.5 shadow-2xl">
                 <button
                   type="button"
-                  onMouseDown={() => {
-                    setQueryPart({ tag: "" });
-                    setTagOpen(false);
-                  }}
-                  className="block w-full px-3 py-1.5 text-left text-[13px] text-zinc-500 hover:bg-white/[.05]"
+                  onClick={() => { setQueryPart({ category: "" }); setCatOpen(false); }}
+                  className="col-span-2 rounded px-2 py-1.5 text-left text-[12px] text-zinc-500 hover:bg-white/[.05]"
                 >
-                  全部（清除筛选）
+                  全部类目
                 </button>
-              )}
-              {tagItems
-                .filter((t) => !tagInput || t.tag.includes(tagInput))
-                .map((t) => (
+                {CATEGORIES.map((c) => (
                   <button
-                    key={t.tag}
+                    key={c}
                     type="button"
-                    onMouseDown={() => {
-                      setQueryPart({ tag: t.tag });
-                      setTagOpen(false);
-                    }}
-                    className={
-                      t.tag === tag
-                        ? "block w-full bg-primary/10 px-3 py-1.5 text-left text-[13px] text-primary"
-                        : "block w-full px-3 py-1.5 text-left text-[13px] text-zinc-400 hover:bg-white/[.05]"
-                    }
+                    onClick={() => { setQueryPart({ category: c }); setCatOpen(false); }}
+                    className={`rounded px-2 py-1.5 text-left text-[12px] transition-colors ${
+                      c === category
+                        ? catTone(c)
+                        : "text-zinc-400 hover:bg-white/[.05]"
+                    }`}
                   >
-                    {t.tag} <span className="font-mono text-xs text-zinc-600">({t.count})</span>
+                    {c === "other" ? "其他" : c}
                   </button>
                 ))}
-              {tagItems.filter((t) => !tagInput || t.tag.includes(tagInput)).length === 0 && (
-                <p className="px-3 py-2 text-[13px] text-zinc-500">无匹配标签</p>
-              )}
-            </div>
+              </div>
+            </>
           )}
         </div>
+
         <label className="ml-1 flex cursor-pointer items-center gap-2 text-[13px] text-muted-foreground">
           <input
             type="checkbox"
@@ -295,7 +278,6 @@ function NewsListInner() {
           查看质检不通过的新闻
         </label>
 
-        {/* 分页（工具行最右） */}
         {data && data.total > data.page_size && (
           <div className="ml-auto flex items-center gap-2.5 font-mono text-[11px] text-zinc-400">
             <button
@@ -321,9 +303,8 @@ function NewsListInner() {
         )}
       </div>
 
-      {/* 主从双栏：左标题流（按日分组）/ 右阅读面板 */}
+      {/* 主从双栏：左标题流 / 右阅读面板 */}
       <div className="grid min-h-0 flex-1 grid-cols-[420px_1fr] gap-3">
-        {/* 左：标题流（按日分组）；筛选时旧内容上遮罩 + loader，不闪空 */}
         <div className="relative flex min-h-0 flex-col overflow-hidden rounded-xl border border-solid border-border bg-white/[.04]">
           {loading && data && (
             <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-black/50 backdrop-blur-[2px]">
@@ -363,15 +344,24 @@ function NewsListInner() {
                             : "border border-solid border-transparent"
                       }`}
                     >
-                      <p
-                        className={`line-clamp-2 leading-snug ${
-                          featured
-                            ? "text-sm font-semibold text-zinc-100"
-                            : "text-[13.5px] text-zinc-200"
-                        }`}
-                      >
-                        {a.title}
-                      </p>
+                      <div className="flex items-start gap-2">
+                        {a.category && (
+                          <span
+                            className={`mt-0.5 shrink-0 rounded-full border border-solid px-1.5 py-0 text-[9.5px] leading-4 ${catTone(a.category)}`}
+                          >
+                            {a.category === "other" ? "其他" : a.category}
+                          </span>
+                        )}
+                        <p
+                          className={`line-clamp-2 leading-snug ${
+                            featured
+                              ? "text-sm font-semibold text-zinc-100"
+                              : "text-[13.5px] text-zinc-200"
+                          }`}
+                        >
+                          {a.title}
+                        </p>
+                      </div>
                       {featured && a.summary && (
                         <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
                           {a.summary}
@@ -412,18 +402,18 @@ function NewsListInner() {
                 <h2 className="mt-2 text-[22px] font-bold leading-snug text-foreground">
                   {selected.title}
                 </h2>
-                {selected.tags.length > 0 && (
-                  <div className="mt-2.5 flex flex-wrap gap-2">
-                    {selected.tags.map((t) => (
-                      <span
-                        key={t}
-                        className={`rounded-full border border-solid px-2.5 py-0.5 text-[10.5px] ${chipTone(t)}`}
-                      >
-                        {t}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                <div className="mt-2.5 flex flex-wrap gap-2">
+                  {selected.category && (
+                    <span className={`rounded-full border border-solid px-2.5 py-0.5 text-[10.5px] font-medium ${catTone(selected.category)}`}>
+                      {selected.category === "other" ? "其他" : selected.category}
+                    </span>
+                  )}
+                  {selected.aux_categories.map((c) => (
+                    <span key={c} className={`rounded-full border border-solid px-2.5 py-0.5 text-[10.5px] opacity-60 ${catTone(c)}`}>
+                      {c}
+                    </span>
+                  ))}
+                </div>
                 {showFailed && selected.fail_reason && (
                   <p className="mt-3 rounded-lg border border-solid border-destructive/30 bg-destructive/[.06] px-3 py-2 text-xs text-red-300">
                     {selected.content_quality === "bad" ? "语义/规则质检不通过" : "抓取/判重未通过"}
