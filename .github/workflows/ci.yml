@@ -57,7 +57,7 @@ jobs:
       - run: npm run build
 
   images:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/refactor/hybrid-retrieval')
     needs: [backend, frontend]
     runs-on: ubuntu-latest
     permissions:
