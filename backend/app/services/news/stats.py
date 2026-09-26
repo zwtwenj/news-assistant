@@ -50,13 +50,13 @@ def compute_news_stats(db: Session) -> dict:
 
     status_rows = (
         db.query(Article.fetch_status, func.count(Article.id))
-        .filter(base)
+        .filter(ok)
         .group_by(Article.fetch_status)
         .all()
     )
-    fetch_stats = {s: c for s, c in status_rows}
+    fetch_stats = {st: c for st, c in status_rows}
 
-    last_updated = db.query(func.max(Article.updated_at)).filter(base).scalar()
+    last_updated = db.query(func.max(Article.updated_at)).filter(ok).scalar()
     last_fetched = db.query(func.max(Feed.last_fetched_at)).scalar()
 
     # 最近 14 天每日入库量（按上海时区分日，含空日期补零，前端画图方便）
