@@ -18,7 +18,6 @@ from sqlalchemy import select
 from app.db.session import SessionLocal
 from app.models.article import Article
 from app.services.llm.gateway import gateway
-from app.services.news import categories as categories_svc
 from app.services.news import vector as vector_svc
 from app.services.podcast import voices as voices_svc
 from app.services.podcast.query_understanding import TopicIntent, understand_topic
@@ -235,26 +234,18 @@ def _hyde_doc(topic: str) -> str | None:
 def _search_materials(
     topic: str, top_k: int, intent: TopicIntent | None = None
 ) -> tuple[list[dict[str, Any]], TopicIntent]:
-    """检索素材（2026-09 重构：按 query 类型分流，实验结论见 eval/ 报告）。
+    """检索素材（2026-09 重构 v2：统一 hybrid，去掉类目过滤）。
 
-    ① intent 仍由创建流程产出（template 脚本风格路由保留）；检索侧不再使用
-       rag_query/intent_tags（关键词化重写实验负收益、标签路 61% miss 定论）
-    ② 综述型（detect_macro 命中封闭类目）→ 类目硬过滤 + 时间窗自动放宽
-    ③ 具体型 → 原始 topic（排序最优）+ HyDE 副路 → dense+BM25 hybrid RRF → rerank
+    ① intent 仍由创建流程产出（template 脚本风格路由保留）
+    ② 全部 query 统一走 hybrid（dense+BM25 加权融合）：原始 topic + HyDE 副路
+       —— 类目过滤已移除：实验证明类目排除相关文章（航班归气象导致"国际航班"
+       query 找不到航班新闻），hybrid 全库搜索覆盖率更高
     返回 (命中列表 ≤ top_k+2 备选, 完整 TopicIntent)；0 命中由调用方拒绝。
     """
     if intent is None:
         intent = understand_topic(topic)
     week_ago = int(time.time()) - SEARCH_DAYS * 86400
     recall_k = top_k * 4
-
-    macro = categories_svc.detect_macro(topic)
-    if macro:
-        hits = vector_svc.search_by_category(macro, topic, top_k=recall_k)
-        logger.info("综述型检索 category={} 命中 {}", macro, len(hits))
-        if hits:
-            return hits[: top_k + 2], intent
-        # 类目内空（罕见）：落到具体型管道兜底
 
     queries = _hyde_doc(topic)
     hits = vector_svc.hybrid_search(
