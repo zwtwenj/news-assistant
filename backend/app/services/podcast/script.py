@@ -419,6 +419,8 @@ def generate_script(
         prompt = template_block + DUAL_PROMPT.format(
             script_prompt_a=script_prompt_a,
             script_prompt_b=script_prompt_b,
+            words_min=plan["words"][0],
+            words_max=plan["words"][1],
             turns_min=plan["turns"][0],
             turns_max=plan["turns"][1],
             **common,
