@@ -198,6 +198,7 @@ def list_articles_v3(
     q = db.query(ArticleV3).filter(ArticleV3.deleted_at.is_(None))
     ok_condition = (
         ArticleV3.fetch_status == "succeeded",
+        ArticleV3.ai_status == "succeeded",  # 打标+分类完成后才可见（不给用户看半成品）
         or_(ArticleV3.content_quality.is_(None), ArticleV3.content_quality != "bad"),
     )
     if quality == "ok":
