@@ -72,6 +72,7 @@ SINGLE_PROMPT = """你是资深新闻节目撰稿人，为早间新闻电台写�
    ①事件本身——发生了什么事、在哪里、何时、影响谁（这是一条新闻的主体）；
    ②关键数字与结果；③各方行动与反应（救援/表态/措施）；
    ④为什么重要。缺要素就回素材里找，找不到不写；
+   ★ 每个要素必须标注来源编号——"素材①提到…""素材②提到…"；
 2. 主次原则：先讲事件背景，再讲行动——听众必须先知道"发生了什么"，
    才能理解"谁在做什么、为什么做"。绝不能脱离事件空谈行动；
 3. 口播稿结构：开场（"为您播报 N 条新闻"）→ 每条新闻先一句话导语
@@ -80,7 +81,13 @@ SINGLE_PROMPT = """你是资深新闻节目撰稿人，为早间新闻电台写�
    每个段落必须让听众获得具体事实，禁止空泛的感慨和过渡；
 5. 全长 {words_min}~{words_max} 字（语速约 280 字/分钟），
    切分为 {seg_min}~{seg_max} 个自然段落，每段一个完整意思；
-6. 只输出 JSON：{{"scratchpad": "各条新闻要素梳理", "segments": [{{"text": "段落内容"}}]}}"""
+6. 只输出 JSON：{{"scratchpad": "各条新闻要素梳理（标注素材来源编号）", "segments": [{{"text": "段落内容"}}]}}
+
+★ 反编造规则（最高优先级）：
+- 素材中未出现的数字、人名、机构名、政策名、日期——一律不得写进口播稿；
+- 如果你"想"提一个素材里没有的具体细节（哪怕很确定它存在），
+  这就是编造——删掉它，或改为泛化表述（如"近年""多地"）；
+- 宁可少说一个数据，也不多说一个不在素材里的数据。"""
 
 DUAL_PROMPT = """你是资深播客导演，为一期约 {minutes} 分钟的双人新闻对谈节目写对话稿。
 
@@ -160,6 +167,170 @@ def _plan(target_minutes: int) -> dict[str, Any]:
 
 
 # 话题→标签映射已迁移至 query_understanding.py（两层 query 理解）
+
+
+# ── Self-Refine 质量循环（DeepSeek 评审 → qwen 改写 → 合格维度不碰 → 退化回退）──
+
+_DS_EVAL_URL = "https://api.deepseek.com/chat/completions"
+_DS_EVAL_MODEL = "deepseek-flash"
+_DIM_LABELS = {
+    "relevance": "素材关联度", "faithfulness": "忠实度",
+    "completeness": "信息完整度", "readability": "可读性",
+}
+
+
+def _ds_evaluate(topic: str, materials: str, script_text: str, mode: str) -> dict:
+    """DeepSeek 4 维评审：relevance / faithfulness / completeness / readability。"""
+    s = get_settings()
+    prompts = {
+        "relevance": (
+            f"话题：{topic}\n\n素材标题：\n"
+            + "\n".join(f"- {ln.strip()}" for ln in materials.splitlines() if ln.startswith("【"))
+            + "\n\n素材与话题关联度 1~5。"
+            + '只输出 JSON：{"score": 1~5, "reason": "15字内"}'
+        ),
+        "faithfulness": (
+            f"事实核查：脚本中的事实是否全部出自素材？\n\n"
+            f"素材：\n{materials[:3000]}\n\n脚本：\n{script_text[:3000]}\n\n"
+            f"打分 1~5（5=全部可溯源）。"
+            f'只输出 JSON：{{"score": 1~5, "reason": "30字内"}}'
+        ),
+        "completeness": (
+            f"话题「{topic}」的脚本覆盖关键信息程度 1~5。\n脚本：\n{script_text[:3000]}"
+            f'只输出 JSON：{{"score": 1~5, "reason": "15字内"}}'
+        ),
+        "readability": (
+            + (
+                f"{'单人' if mode == 'single' else '双人'}播客脚本质量 1~5。\n"
+                f"{script_text[:3000]}\n\n"
+                f'只输出 JSON：{{"score": 1~5, "comment": "15字内"}}'
+            )
+        ),
+    }
+    scores = {}
+    for dim, p in prompts.items():
+        try:
+            resp = httpx.post(
+                _DS_EVAL_URL,
+                headers={"Authorization": f"Bearer {s.deepseek_api_key}"},
+                json={"model": _DS_EVAL_MODEL,
+                      "messages": [{"role": "user", "content": p}],
+                      "max_tokens": 10000, "temperature": 0.0},
+                timeout=90,
+            )
+            resp.raise_for_status()
+            msg = resp.json()["choices"][0]["message"]
+            for src in (msg.get("content") or "", msg.get("reasoning_content") or ""):
+                cl = re.sub(r"```json\s*|```\s*$", "", src.strip(), flags=re.MULTILINE).strip()
+                m = re.search(r"\{[^{}]*\}", cl)
+                if m:
+                    try:
+                        parsed = json.loads(m.group())
+                        scores[dim] = {"score": parsed.get("score", 0),
+                                       "reason": parsed.get("reason") or parsed.get("comment") or ""}
+                        break
+                    except json.JSONDecodeError:
+                        continue
+            else:
+                scores[dim] = {"score": 0, "reason": "解析失败"}
+        except Exception as exc:  # noqa: BLE001
+            scores[dim] = {"score": 0, "reason": str(exc)[:60]}
+    return scores
+
+
+def _self_refine(
+    topic: str, materials: str, script_text: str, mode: str,
+    materials_detail: list,
+) -> tuple:
+    """Self-Refine：DeepSeek 评 → 不达标维度改写 → 合格维度不碰 → 退化回退。
+
+    最多 2 次 DeepSeek 评审，第 3 版为终版。
+    返回 (改进后文本, 元数据 dict)。
+    """
+    current = script_text
+    final_version = 1
+    check_meta = []
+    prev_scores = None
+
+    for check_round in range(1, 3):  # 最多 2 次评审
+        scores = _ds_evaluate(topic, materials, current, mode)
+        all_pass = all(v.get("score", 0) >= 4 for v in scores.values())
+        check_meta.append({"check": check_round, "scores": scores})
+
+        passed_dims = [d for d, v in scores.items() if v.get("score", 0) >= 4]
+        failed_dims = [d for d, v in scores.items() if v.get("score", 0) < 4]
+        logger.info(
+            "Self-Refine check {}: {} | rel={} faith={} compl={} read={}",
+            check_round, "PASS" if all_pass else "FAIL",
+            scores.get("relevance", {}).get("score", 0),
+            scores.get("faithfulness", {}).get("score", 0),
+            scores.get("completeness", {}).get("score", 0),
+            scores.get("readability", {}).get("score", 0),
+        )
+
+        if all_pass:
+            break
+
+        fb_parts = []
+        for d in failed_dims:
+            v = scores[d]
+            fb_parts.append(f"【{_DIM_LABELS.get(d, d)}】{v.get('score', 0)}/5 —— {v.get('reason', '')}")
+        feedback = "\n".join(fb_parts)
+        preserve = ", ".join(passed_dims) if passed_dims else ""
+
+        prev_script = current
+        prev_snap = {d: scores.get(d, {}).get("score", 0) for d in scores}
+        try:
+            rewrite_prompt = (
+                f"你之前写了一篇脚本，评审给出了改进意见：\n\n"
+                f"评审意见：\n{feedback}\n\n"
+                + (f"以下维度已合格，不要降低质量：{preserve}\n\n" if preserve else "")
+                + f"你之前写的脚本：\n{current[:3000]}\n\n"
+                f"参考素材：\n{materials[:3000]}\n\n"
+                f"只修复评审指出的问题，不改动其他部分。"
+                f'只输出 JSON：{{"segments": [{{"speaker": "A/B", "text": "..."}}]}}'
+            )
+            resp = httpx.post(
+                "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+                headers={"Authorization": f"Bearer {s.dashscope_api_key}"},
+                json={"model": "qwen-plus",
+                      "messages": [{"role": "user", "content": rewrite_prompt}],
+                      "max_tokens": 10000, "temperature": 0.2},
+                timeout=120,
+            )
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"]
+            cleaned = re.sub(r"```json\s*|```\s*$", "", raw.strip(), flags=re.MULTILINE).strip()
+            data = _safe_json(cleaned)
+            new_text = "\n".join(
+                f"{seg['speaker']}: {seg['text']}" if seg.get("speaker") else seg.get("text", "")
+                for seg in data.get("segments", [])
+            )
+            if not new_text.strip():
+                raise ValueError("empty")
+            current = new_text
+            final_version += 1
+            logger.info("Self-Refine rewrite done: v{}", final_version)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Self-Refine rewrite fail: {}", str(exc)[:60])
+            break
+
+        new_scores = _ds_evaluate(topic, materials, current, mode)
+        regressed = any(
+            new_scores.get(d, {}).get("score", 0) < prev_snap.get(d, 0)
+            for d in prev_snap if prev_snap.get(d, 0) >= 4
+        )
+        if regressed:
+            logger.warning("Self-Refine rewrite regressed, reverting")
+            current = prev_script
+            final_version -= 1
+
+    meta = {
+        "final_version": final_version,
+        "checks": check_meta,
+        "improved": current != script_text,
+    }
+    return current, meta
 
 
 _RELEVANCE_PROMPT = """你是新闻编辑，判断检索到的新闻素材能否支撑用户话题的播客生成。
@@ -453,8 +624,37 @@ def generate_script(
                 logger.warning("script still short after retry: {}/{}", total_chars, words_min)
             logger.info("script ok: {} 段 {} 字（目标 {}~{}）", len(segments), total_chars,
                         words_min, words_max)
+
+            # ── Self-Refine 质量循环：DeepSeek 评审 → 不达标维度改写 → 最多 2 次 ──
+            script_text = "\n".join(
+                f"{s_.get('speaker','')}: {s_.get('text','')}".strip() for s_ in segments
+            )
+            refined_text, refine_meta = _self_refine(
+                topic_prompt, materials, script_text, mode, materials_detail,
+            )
+            if refined_text != script_text:
+                # 解析改写后的 segments
+                try:
+                    # 从 refined_text 重建 segments（保持原始格式）
+                    refined_segments = []
+                    for line in refined_text.splitlines():
+                        line = line.strip()
+                        if ": " in line:
+                            spk, txt = line.split(": ", 1)
+                            refined_segments.append({"speaker": spk, "text": txt})
+                        elif line:
+                            refined_segments.append({"speaker": "A", "text": line})
+                    if refined_segments:
+                        segments = refined_segments
+                        total_chars = sum(len(s["text"]) for s in segments)
+                        logger.info("Self-Refine 改写: {} 段 {} 字（v{}）",
+                                    len(segments), total_chars, refine_meta.get("final_version", 1))
+                except Exception:  # noqa: BLE001
+                    logger.warning("Self-Refine 结果解析失败，保留原稿")
+
             return {"segments": segments, "materials": materials_detail,
-                    "intent": intent.to_dict()}
+                    "intent": intent.to_dict(),
+                    "refine_meta": refine_meta}
         except Exception as exc:  # noqa: BLE001
             last_err = exc
             logger.warning("script attempt fail: {}: {}", exc.__class__.__name__, str(exc)[:80])

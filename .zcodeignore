@@ -1,0 +1,64 @@
+# ===== 密钥与本地环境（永不入库）=====
+.env
+*.env
+env.local
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# ===== Node =====
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# ===== 其他 =====
+.DS_Store
+*.log
+.idea/
+.vscode/
+.zcode/
+
+# ===== 媒体产物（终存 OSS，本地仅生成中暂存）=====
+backend/media/
+plan.md
+docs/
+backend/data/
+
+# ===== 检索评测工作区（本地资产，不入库） =====
+eval/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）
