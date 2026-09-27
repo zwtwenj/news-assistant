@@ -162,6 +162,157 @@ def _plan(target_minutes: int) -> dict[str, Any]:
 # 话题→标签映射已迁移至 query_understanding.py（两层 query 理解）
 
 
+# ── Self-Refine 质量循环（仅单人口播启用）──
+
+_DS_EVAL_MODEL = "deepseek-flash"
+
+
+def _ds_evaluate(topic: str, materials: str, script_text: str) -> dict:
+    """DeepSeek 4 维评审单人口播稿。"""
+    s = get_settings()
+    prompts = {
+        "relevance": (
+            f"话题：{topic}\n\n素材标题：\n"
+            + "\n".join(f"- {ln.strip()}" for ln in materials.splitlines() if ln.startswith("【"))
+            + "\n\n素材与话题关联度 1~5。"
+            + '只输出 JSON：{"score": 1~5, "reason": "15字内"}'
+        ),
+        "faithfulness": (
+            f"事实核查：脚本中的事实是否全部出自素材？\n\n"
+            f"素材：\n{materials[:3000]}\n\n脚本：\n{script_text[:3000]}\n\n"
+            f"打分 1~5（5=全部可溯源）。"
+            f'只输出 JSON：{"score": 1~5, "reason": "30字内"}'
+        ),
+        "completeness": (
+            f"话题「{topic}」的脚本覆盖关键信息程度 1~5。\n脚本：\n{script_text[:3000]}"
+            f'只输出 JSON：{"score": 1~5, "reason": "15字内"}'
+        ),
+        "readability": (
+            f"单人口播稿质量 1~5（不要用对谈标准评）。"
+            f"\n脚本：\n{script_text[:3000]}"
+            f'只输出 JSON：{"score": 1~5, "comment": "15字内"}'
+        ),
+    }
+    scores = {}
+    for dim, p in prompts.items():
+        try:
+            resp = httpx.post(
+                "https://api.deepseek.com/chat/completions",
+                headers={"Authorization": f"Bearer {s.deepseek_api_key}"},
+                json={"model": _DS_EVAL_MODEL,
+                      "messages": [{"role": "user", "content": p}],
+                      "max_tokens": 10000, "temperature": 0.0},
+                timeout=90,
+            )
+            resp.raise_for_status()
+            msg = resp.json()["choices"][0]["message"]
+            for src in (msg.get("content") or "", msg.get("reasoning_content") or ""):
+                cl = re.sub(r"```json\s*|```\s*$", "", src.strip(), flags=re.MULTILINE).strip()
+                m = re.search(r"\{[^{}]*\}", cl)
+                if m:
+                    try:
+                        parsed = json.loads(m.group())
+                        scores[dim] = {"score": parsed.get("score", 0),
+                                       "reason": parsed.get("reason") or parsed.get("comment") or ""}
+                        break
+                    except json.JSONDecodeError:
+                        continue
+            else:
+                scores[dim] = {"score": 0, "reason": "解析失败"}
+        except Exception as exc:  # noqa: BLE001
+            scores[dim] = {"score": 0, "reason": str(exc)[:60]}
+    return scores
+
+
+def _self_refine(
+    topic: str, materials: str, script_text: str, mode: str,
+    materials_detail: list,
+) -> tuple:
+    """Self-Refine：仅单人口播。DeepSeek 评 → 不达标改写 → 退化回退。最多 2 次评审。"""
+    current = script_text
+    final_version = 1
+    check_meta = []
+    prev_scores = None
+
+    for check_round in range(1, 3):
+        scores = _ds_evaluate(topic, materials, current)
+        all_pass = all(v.get("score", 0) >= 4 for v in scores.values())
+        check_meta.append({"check": check_round, "scores": scores})
+
+        passed_dims = [d for d, v in scores.items() if v.get("score", 0) >= 4]
+        failed_dims = [d for d, v in scores.items() if v.get("score", 0) < 4]
+        logger.info(
+            "Self-Refine check {}: {}",
+            check_round, "PASS" if all_pass else "FAIL",
+        )
+
+        if all_pass:
+            break
+
+        fb_parts = []
+        for d in failed_dims:
+            v = scores[d]
+            fb_parts.append(f"[{_DIM_LABELS.get(d, d)}] {v.get('score', 0)}/5 - {v.get('reason', '')}")
+        feedback = "\n".join(fb_parts)
+        preserve = ", ".join(passed_dims) if passed_dims else ""
+
+        prev_script = current
+        prev_snap = {d: scores.get(d, {}).get("score", 0) for d in scores}
+        try:
+            rewrite_prompt = (
+                f"你之前写了一篇单人口播稿，评审给出了改进意见：\n\n"
+                f"评审意见：\n{feedback}\n\n"
+                + (f"以下维度已合格，不要降低质量：{preserve}\n\n" if preserve else "")
+                + f"你之前写的脚本：\n{current[:3000]}\n\n"
+                f"参考素材：\n{materials[:3000]}\n\n"
+                f"只修复评审指出的问题，不改动其他部分。"
+                f'只输出 JSON：{{"segments": [{{"text": "..."}}]}}'
+            )
+            resp = httpx.post(
+                "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+                headers={"Authorization": f"Bearer {s.dashscope_api_key}"},
+                json={"model": "qwen-plus",
+                      "messages": [{"role": "user", "content": rewrite_prompt}],
+                      "max_tokens": 10000, "temperature": 0.2},
+                timeout=120,
+            )
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"]
+            cleaned = re.sub(r"```json\s*|```\s*$", "", raw.strip(), flags=re.MULTILINE).strip()
+            data = _safe_json(cleaned)
+            new_text = "\n".join(
+                seg.get("text", "") for seg in data.get("segments", [])
+            )
+            if not new_text.strip():
+                raise ValueError("empty")
+            current = new_text
+            final_version += 1
+            logger.info("Self-Refine rewrite done: v{}", final_version)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Self-Refine rewrite fail: {}", str(exc)[:60])
+            break
+
+        new_scores = _ds_evaluate(topic, materials, current)
+        regressed = any(
+            new_scores.get(d, {}).get("score", 0) < prev_snap.get(d, 0)
+            for d in prev_snap if prev_snap.get(d, 0) >= 4
+        )
+        if regressed:
+            logger.warning("Self-Refine rewrite regressed, reverting")
+            current = prev_script
+            final_version -= 1
+
+    meta = {
+        "final_version": final_version,
+        "checks": check_meta,
+        "improved": current != script_text,
+    }
+    return current, meta
+
+
+# ↑↑↑ Self-Refine 函数结束 ↑↑↑
+
+
 _RELEVANCE_PROMPT = """你是新闻编辑，判断检索到的新闻素材能否支撑用户话题的播客生成。
 
 用户话题：{topic}
@@ -453,6 +604,21 @@ def generate_script(
                 logger.warning("script still short after retry: {}/{}", total_chars, words_min)
             logger.info("script ok: {} 段 {} 字（目标 {}~{}）", len(segments), total_chars,
                         words_min, words_max)
+
+            # Self-Refine 质量循环：仅单人口播启用（双人不做，保持原有流程）
+            if mode == "single":
+                script_text = "\n".join(
+                    s_.get("text", "") for s_ in segments
+                )
+                refined_text, refine_meta = _self_refine(
+                    topic_prompt, materials, script_text, mode, materials_detail,
+                )
+                if refined_text != script_text:
+                    for s_, line in zip(segments, refined_text.splitlines()):
+                        if line.strip():
+                            s_["text"] = line.strip()
+                    logger.info("Self-Refine 改写完成（v{}）", refine_meta.get("final_version", 1))
+
             return {"segments": segments, "materials": materials_detail,
                     "intent": intent.to_dict()}
         except Exception as exc:  # noqa: BLE001
