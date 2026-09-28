@@ -29,6 +29,9 @@ celery_app.conf.update(
         "app.tasks.news.analyze_articles": {"queue": "llm"},
         "app.tasks.news.embed_articles": {"queue": "llm"},
         "app.tasks.news.run_daily_pipeline": {"queue": "default"},
+        # 新浪滚动回填（后管手动触发）
+        "app.tasks.news.fetch_sina_roll": {"queue": "crawl"},
+        "app.tasks.news.run_sina_backfill": {"queue": "default"},
         # 播客合成
         "app.tasks.podcast.gen_script": {"queue": "llm"},
         "app.tasks.podcast.synth_tts": {"queue": "media"},

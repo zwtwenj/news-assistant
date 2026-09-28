@@ -41,6 +41,7 @@ from app.services.news import quality as quality_svc
 from app.services.news import rss as rss_svc
 from app.services.news import semantic_check as semantic_svc
 from app.services.news import simhash as simhash_svc
+from app.services.news import sina_roll as sina_svc
 from app.services.news import stats as stats_svc
 from app.services.news import vector as vector_svc
 from app.services.news import vocabulary as vocabulary_svc
@@ -160,6 +161,89 @@ def fetch_feeds(self) -> str:
         return f"新增 {added} 篇"
     finally:
         db.close()
+
+
+# ---------- 阶段 1 变体：新浪滚动回填（后管手动触发，plan feat/sina-ingest）----------
+
+SINA_FEED_NAME = "新浪滚动·回填"
+SINA_FEED_URL = "sina://roll/backfill"  # feeds.url unique；enabled=False 不参与每日 RSS 拉取
+BACKFILL_RUNNING_TTL = 48 * 3600  # 覆盖 5 天回填的最长链路时长；worker 崩溃则锁到期自动解
+
+
+@celery_app.task(base=BaseTask, bind=True, name="app.tasks.news.fetch_sina_roll")
+@observe()
+def fetch_sina_roll(self, days: int = 1) -> str:
+    """新浪滚动回填·发现阶段：拉取近 days 天 → URL 去重 → 入库（PENDING）。
+
+    后续 scrape→analyze→embed 由 run_sina_backfill 链式接力，全程复用四阶段状态机。
+    """
+    db = SessionLocal()
+    added = skipped = 0
+    try:
+        feed = db.query(Feed).filter(Feed.name == SINA_FEED_NAME).first()
+        if feed is None:
+            feed = Feed(name=SINA_FEED_NAME, url=SINA_FEED_URL, enabled=False)
+            db.add(feed)
+            db.commit()
+            db.refresh(feed)
+        entries = sina_svc.fetch_roll(days=days)
+        for e in entries:
+            if not e["publish_time"]:
+                continue
+            if db.query(Article.id).filter(Article.url == e["url"]).first():
+                skipped += 1
+                continue
+            db.add(
+                Article(
+                    feed_id=feed.id,
+                    url=e["url"],
+                    title=e["title"][:500],
+                    source=(e["source"] or SINA_FEED_NAME)[:200],
+                    publish_time=e["publish_time"],
+                    content=(e["summary"] or "")[:5000],  # API introduce 兜底，scrape 后覆盖
+                    fetch_status=PENDING,
+                )
+            )
+            added += 1
+        db.commit()
+        logger.info("sina 回填发现阶段：新增 {}（已存在跳过 {}）", added, skipped)
+        send_alert(
+            "新浪回填·发现报告",
+            f"拉取近 {days} 天滚动新闻：新增 {added} 篇 ｜ 已存在跳过 {skipped} 篇\n"
+            f"scrape→analyze→embed 链式接力中，完成后入库新闻列表。",
+        )
+        return f"新增 {added} 篇"
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.news.run_sina_backfill", base=Task)
+@observe()
+def run_sina_backfill(self, days: int = 1) -> str:
+    """回填编排：Redis 并发闸（防重复触发）+ 四阶段链 + 链尾 stats 刷新。"""
+    running_key = "backfill:sina:running"
+    if not redis_client.set(running_key, "1", nx=True, ex=BACKFILL_RUNNING_TTL):
+        logger.info("sina 回填正在执行中（running={}），跳过本次触发", running_key)
+        return "执行中，跳过"
+    chain(
+        fetch_sina_roll.si(days),
+        scrape_articles.si(),
+        analyze_articles.si(),
+        embed_articles.si(),
+        reconcile_vectors.si(),
+        mark_backfill_done.si(),
+    ).apply_async()
+    logger.info("sina 回填链已触发（days={}）", days)
+    return f"回填链已触发（days={days}）"
+
+
+@celery_app.task(name="app.tasks.news.mark_backfill_done", base=Task)
+def mark_backfill_done() -> str:
+    """链尾：释放并发闸 + 刷新数据总览缓存（对齐每日 mark_pipeline_done 惯例）。"""
+    redis_client.delete("backfill:sina:running")
+    stats_svc.refresh_cache()
+    send_alert("新浪回填·完成", "全链完成（发现→抓取→打标→向量化→对账），总览缓存已刷新。")
+    return "done"
 
 
 # ---------- 阶段 2：正文抓取 + SimHash 去重 ----------
