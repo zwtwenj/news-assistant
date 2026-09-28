@@ -7,6 +7,7 @@ Langfuse（plan §8）：阶段任务 @observe 建 trace（session=pipeline-{dat
 每篇打标在 span 下进行，规则分全量 + judge 采样 20% 打 score。
 """
 
+import json
 import random
 import time
 from datetime import UTC, datetime, timedelta
@@ -167,6 +168,7 @@ def fetch_feeds(self) -> str:
 
 SINA_FEED_NAME = "新浪滚动·回填"
 SINA_FEED_URL = "sina://roll/backfill"  # feeds.url unique；enabled=False 不参与每日 RSS 拉取
+SINA_STATUS_KEY = "backfill:sina:status"  # 值=JSON 状态（后管可查询）；存在即回填进行中
 BACKFILL_RUNNING_TTL = 48 * 3600  # 覆盖 5 天回填的最长链路时长；worker 崩溃则锁到期自动解
 
 
@@ -220,10 +222,18 @@ def fetch_sina_roll(self, days: int = 1) -> str:
 @celery_app.task(name="app.tasks.news.run_sina_backfill", base=Task)
 @observe()
 def run_sina_backfill(self, days: int = 1) -> str:
-    """回填编排：Redis 并发闸（防重复触发）+ 四阶段链 + 链尾 stats 刷新。"""
-    running_key = "backfill:sina:running"
-    if not redis_client.set(running_key, "1", nx=True, ex=BACKFILL_RUNNING_TTL):
-        logger.info("sina 回填正在执行中（running={}），跳过本次触发", running_key)
+    """独立回填编排：与每日管线无关（不查 done 标记），仅以自身状态标记防重入。
+
+    状态标记 backfill:sina:status：触发即置位（JSON：days/started_at，后管可查询），
+    链尾 mark_backfill_done 重置；worker 崩溃则 TTL 到期自动解。
+    """
+    started_at = datetime.now(UTC).isoformat(timespec="seconds")
+    if not redis_client.set(
+        SINA_STATUS_KEY,
+        json.dumps({"state": "pending", "days": days, "started_at": started_at}),
+        nx=True, ex=BACKFILL_RUNNING_TTL,
+    ):
+        logger.info("sina 回填正在执行中（status={}），跳过本次触发", SINA_STATUS_KEY)
         return "执行中，跳过"
     chain(
         fetch_sina_roll.si(days),
@@ -239,8 +249,8 @@ def run_sina_backfill(self, days: int = 1) -> str:
 
 @celery_app.task(name="app.tasks.news.mark_backfill_done", base=Task)
 def mark_backfill_done() -> str:
-    """链尾：释放并发闸 + 刷新数据总览缓存（对齐每日 mark_pipeline_done 惯例）。"""
-    redis_client.delete("backfill:sina:running")
+    """链尾：重置状态标记 + 刷新数据总览缓存（对齐每日 mark_pipeline_done 惯例）。"""
+    redis_client.delete(SINA_STATUS_KEY)
     stats_svc.refresh_cache()
     send_alert("新浪回填·完成", "全链完成（发现→抓取→打标→向量化→对账），总览缓存已刷新。")
     return "done"
