@@ -9,12 +9,15 @@
 """
 
 import json
+import re
 import time
 from typing import Any
 
+import httpx
 from loguru import logger
 from sqlalchemy import select
 
+from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.models.article import Article
 from app.services.llm.gateway import gateway
@@ -22,9 +25,12 @@ from app.services.news import vector as vector_svc
 from app.services.podcast import voices as voices_svc
 from app.services.podcast.query_understanding import TopicIntent, understand_topic
 
-# 脚本生成用中档模型（flash 级写新闻信息组织偏弱）；打标仍用 deepseek-v4-flash
-SCRIPT_PROVIDER = "dashscope"
-SCRIPT_MODEL = "qwen-plus"
+# 生成/改写/抽卡统一用 zhipu 付费档 glm-4.5-air：免费 glm-4-flash 尾延迟 55s+
+# 曾把 60s 超时打爆；关思考避免输出预算被推理 token 挤占（实测 540→169 tokens）
+SCRIPT_PROVIDER = "zhipu"
+SCRIPT_MODEL = "glm-4.5-air"
+SCRIPT_MAX_TOKENS = 8000
+_THINKING_OFF = {"thinking": {"type": "disabled"}}
 SEARCH_DAYS = 7
 MIN_SCORE = 0.15  # 检索分数下限（rerank 对泛 query 打分保守，粗筛放宽交给精排排序）
 CONTENT_EXCERPT = 2000  # 每条素材注入的正文节选字数（新闻导语/背景常在文中后段，不宜截太狠）
@@ -154,7 +160,7 @@ def _plan(target_minutes: int) -> dict[str, Any]:
     if target_minutes <= 2:  # 短（1~2 分钟）
         return {"top_k": 1, "words": (550, 750), "segs": (4, 6), "turns": (10, 14)}
     if target_minutes <= 5:  # 中（3~5 分钟）
-        return {"top_k": 3, "words": (1150, 1500), "segs": (7, 10), "turns": (20, 28)}
+        return {"top_k": 5, "words": (1150, 1500), "segs": (7, 10), "turns": (20, 28)}
     # 长（5~8 分钟）
     return {"top_k": 5, "words": (1900, 2400), "segs": (12, 16), "turns": (34, 44)}
 
@@ -163,41 +169,85 @@ def _plan(target_minutes: int) -> dict[str, Any]:
 
 
 # ── Self-Refine 质量循环（仅单人口播启用）──
+#
+# 数据链契约：评审是 (topic, materials, script) 的纯函数——materials 必须是
+# 生成时检索并冻结的那份素材正文，评审与改写环节一律不做任何检索；
+# 素材与脚本全文送审，不做任何截断。生产 Self-Refine 与离线评测共用 _ds_evaluate。
 
 _DS_EVAL_MODEL = "deepseek-flash"
 
+_DIM_LABELS = {
+    "relevance": "相关性",
+    "faithfulness": "事实忠实度",
+    "completeness": "信息完整度",
+    "readability": "口播可读性",
+}
 
-def _ds_evaluate(topic: str, materials: str, script_text: str) -> dict:
-    """DeepSeek 4 维评审单人口播稿。"""
+
+def _today_str() -> str:
+    """当前日期（含星期）：日期由系统注入，生成与评审共用，禁止模型自编。"""
+    t = time.localtime()
+    return f"{time.strftime('%Y年%m月%d日', t)}（{'一二三四五六日'[t.tm_wday]}）"
+
+
+def _ds_evaluate(
+    topic: str, materials: str, script_text: str, today: str = "",
+) -> dict:
+    """DeepSeek 4 维评审单人口播稿，返回 {维度: {score, reason}}。"""
     s = get_settings()
+    ds_url = s.deepseek_base_url.rstrip("/") + "/chat/completions"
+    n_mat = len(set(re.findall(r"【素材\d+】", materials)))
+    thin_note = (
+        f"本次素材共 {n_mat} 篇，低于 5 篇：脚本篇幅与信息量受素材所限，"
+        "只评素材所含关键信息是否被脚本覆盖，不要因篇幅短、信息密度低而扣分"
+        if n_mat < 5
+        else ""
+    )
+    date_note = (
+        f"【节目播出日期】{today}——脚本以「今天」「昨日」等指代日期时以此为准，不计无源。\n"
+        if today
+        else ""
+    )
     prompts = {
         "relevance": (
-            f"话题：{topic}\n\n素材标题：\n"
+            f"你是播客听众。以下是为话题「{topic}」检索到的新闻素材标题：\n\n"
             + "\n".join(f"- {ln.strip()}" for ln in materials.splitlines() if ln.startswith("【"))
-            + "\n\n素材与话题关联度 1~5。"
+            + "\n\n素材与话题的关联度 1~5。5=至少一篇直接讨论话题核心事件；"
+              "3=同类目但角度不同；1=仅大类沾边。"
             + '只输出 JSON：{"score": 1~5, "reason": "15字内"}'
         ),
         "faithfulness": (
-            f"事实核查：脚本中的事实是否全部出自素材？\n\n"
-            f"素材：\n{materials[:3000]}\n\n脚本：\n{script_text[:3000]}\n\n"
-            f"打分 1~5（5=全部可溯源）。"
-            f'只输出 JSON：{"score": 1~5, "reason": "30字内"}'
+            "你是事实核查员。只核查【事实性陈述】：数字、日期、人名、机构、政策名、"
+            "比例、对比、因果断言是否能在素材中找到出处。\n"
+            "【口径钉死】评论性、展望性、祝愿性表述（如「迈上新台阶」「前景广阔」"
+            "「让我们共同努力」）属于播音话术，不属事实核查范围，不得因此扣分；"
+            "但假借他人之口的引语必须有出处。\n"
+            + date_note
+            + f"\n素材正文：\n{materials}\n\n脚本：\n{script_text}\n\n"
+            "打分 1~5：5=全部事实性陈述可溯源；4=个别修饰性说法无源但不影响主体；"
+            "3=有1~2处无源或与素材相悖；2=多处无源；1=大面积编造。"
+            '只输出 JSON：{"score": 1~5, "reason": "列出无源的具体说法，60字内"}'
         ),
         "completeness": (
-            f"话题「{topic}」的脚本覆盖关键信息程度 1~5。\n脚本：\n{script_text[:3000]}"
-            f'只输出 JSON：{"score": 1~5, "reason": "15字内"}'
+            f"你是播客听众。话题「{topic}」的脚本是否覆盖了关键信息，打分 1~5。\n\n"
+            f"脚本：\n{script_text}\n\n"
+            + (f"素材量参考：{thin_note}。\n" if thin_note else "")
+            + "5=素材与话题的关键信息全覆盖；3=覆盖一半左右；1=只用了极小部分。"
+            '只输出 JSON：{"score": 1~5, "reason": "15字内"}'
         ),
         "readability": (
-            f"单人口播稿质量 1~5（不要用对谈标准评）。"
-            f"\n脚本：\n{script_text[:3000]}"
-            f'只输出 JSON：{"score": 1~5, "comment": "15字内"}'
+            "你是新闻电台制作人。这是一篇【单人口播稿】，由一位主持人独立播报，"
+            "不是双人对谈——用口播稿标准评，不要用对谈标准。看：结构清晰"
+            "（导语→细节→收尾）、口语自然不念稿、节奏适中。\n\n"
+            f"脚本：\n{script_text}\n\n"
+            '只输出 JSON：{"score": 1~5, "reason": "15字内"}'
         ),
     }
     scores = {}
     for dim, p in prompts.items():
         try:
             resp = httpx.post(
-                "https://api.deepseek.com/chat/completions",
+                ds_url,
                 headers={"Authorization": f"Bearer {s.deepseek_api_key}"},
                 json={"model": _DS_EVAL_MODEL,
                       "messages": [{"role": "user", "content": p}],
@@ -212,8 +262,8 @@ def _ds_evaluate(topic: str, materials: str, script_text: str) -> dict:
                 if m:
                     try:
                         parsed = json.loads(m.group())
-                        scores[dim] = {"score": parsed.get("score", 0),
-                                       "reason": parsed.get("reason") or parsed.get("comment") or ""}
+                        reason = parsed.get("reason") or parsed.get("comment") or ""
+                        scores[dim] = {"score": parsed.get("score", 0), "reason": reason}
                         break
                     except json.JSONDecodeError:
                         continue
@@ -224,93 +274,211 @@ def _ds_evaluate(topic: str, materials: str, script_text: str) -> dict:
     return scores
 
 
+def _llm_json(text: str) -> dict:
+    """LLM 输出容错解析为 dict（剥 ```json 围栏）。"""
+    cleaned = re.sub(r"```json\s*|```\s*$", "", text.strip(), flags=re.MULTILINE).strip()
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _parse_rewrite_segments(text: str) -> str:
+    """解析改写输出的 segments JSON（含围栏/转义容错），拼回逐行脚本文本。"""
+    data = _llm_json(text)
+    segs = data.get("segments")
+    if not isinstance(segs, list):
+        cleaned = re.sub(r"```json\s*|```\s*$", "", text.strip(), flags=re.MULTILINE).strip()
+        segs = []
+        for m in re.finditer(r'"text"\s*:\s*"((?:[^"\\]|\\.)*)"', cleaned):
+            segs.append({"text": json.loads(f'"{m.group(1)}"')})
+    if not isinstance(segs, list):
+        raise ValueError("改写输出缺少 segments")
+    lines = [str(g.get("text", "")).strip() for g in segs if isinstance(g, dict)]
+    lines = [ln for ln in lines if ln]
+    if not lines:
+        raise ValueError("改写输出为空")
+    return "\n".join(lines)
+
+
 def _self_refine(
-    topic: str, materials: str, script_text: str, mode: str,
-    materials_detail: list,
-) -> tuple:
-    """Self-Refine：仅单人口播。DeepSeek 评 → 不达标改写 → 退化回退。最多 2 次评审。"""
+    topic: str, materials: str, script_text: str, today: str = "",
+    rewrite_evidence: str = "",
+) -> tuple[str, dict]:
+    """Self-Refine（仅单人）：DeepSeek 评 → 只改不达标维度 → 退化回退。
+
+    最多 2 次评审 / 1 次改写；评审对 materials 全文，改写只认 rewrite_evidence
+    （事实卡，缺省回退 materials），全程不检索。
+    返回 (终版文本, meta)；meta 含 final_version / checks / improved。
+    """
     current = script_text
     final_version = 1
-    check_meta = []
-    prev_scores = None
+    check_meta: list[dict] = []
 
     for check_round in range(1, 3):
-        scores = _ds_evaluate(topic, materials, current)
+        scores = _ds_evaluate(topic, materials, current, today)
         all_pass = all(v.get("score", 0) >= 4 for v in scores.values())
-        check_meta.append({"check": check_round, "scores": scores})
-
-        passed_dims = [d for d, v in scores.items() if v.get("score", 0) >= 4]
-        failed_dims = [d for d, v in scores.items() if v.get("score", 0) < 4]
-        logger.info(
-            "Self-Refine check {}: {}",
-            check_round, "PASS" if all_pass else "FAIL",
-        )
+        check_meta.append({"check": check_round, "all_pass": all_pass, "scores": scores})
+        logger.info("Self-Refine check {}: {}", check_round, "PASS" if all_pass else "FAIL")
 
         if all_pass:
             break
+        if any(v.get("score", 0) == 0 for v in scores.values()):
+            logger.warning("Self-Refine: 评审调用失败（score=0），终止 refine")
+            break
+        if check_round >= 2:
+            break  # 已评 2 次，当前版本为终版
 
-        fb_parts = []
-        for d in failed_dims:
-            v = scores[d]
-            fb_parts.append(f"[{_DIM_LABELS.get(d, d)}] {v.get('score', 0)}/5 - {v.get('reason', '')}")
-        feedback = "\n".join(fb_parts)
-        preserve = ", ".join(passed_dims) if passed_dims else ""
+        failed = {d: v for d, v in scores.items() if v.get("score", 0) < 4}
+        passed = [d for d, v in scores.items() if v.get("score", 0) >= 4]
+        feedback = "\n".join(
+            f"[{_DIM_LABELS.get(d, d)}] {v.get('score', 0)}/5 —— {v.get('reason', '')}"
+            for d, v in failed.items()
+        )
+        preserve = "、".join(_DIM_LABELS.get(d, d) for d in passed)
 
         prev_script = current
-        prev_snap = {d: scores.get(d, {}).get("score", 0) for d in scores}
+        prev_snap = {d: v.get("score", 0) for d, v in scores.items()}
         try:
             rewrite_prompt = (
                 f"你之前写了一篇单人口播稿，评审给出了改进意见：\n\n"
                 f"评审意见：\n{feedback}\n\n"
-                + (f"以下维度已合格，不要降低质量：{preserve}\n\n" if preserve else "")
-                + f"你之前写的脚本：\n{current[:3000]}\n\n"
-                f"参考素材：\n{materials[:3000]}\n\n"
-                f"只修复评审指出的问题，不改动其他部分。"
-                f'只输出 JSON：{{"segments": [{{"text": "..."}}]}}'
+                + (f"以下维度已合格，改写时不要降低这些维度的质量：{preserve}\n\n"
+                   if preserve else "")
+                + (f"【当前日期】{today}——脚本中的日期表述以此为准，不得更改。\n\n"
+                   if today else "")
+                + f"你之前写的脚本：\n{current}\n\n"
+                f"参考事实（所有事实必须出自这里；其中没有依据的说法，删掉或"
+                f"改为实际存在的信息）：\n{rewrite_evidence or materials}\n\n"
+                f"只修复评审指出的问题，其余部分保持原样。"
+                '只输出 JSON：{"segments": [{"text": "..."}]}'
             )
-            resp = httpx.post(
-                "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-                headers={"Authorization": f"Bearer {s.dashscope_api_key}"},
-                json={"model": "qwen-plus",
-                      "messages": [{"role": "user", "content": rewrite_prompt}],
-                      "max_tokens": 10000, "temperature": 0.2},
-                timeout=120,
+            resp = gateway.chat(
+                SCRIPT_PROVIDER, model=SCRIPT_MODEL,
+                messages=[{"role": "user", "content": rewrite_prompt}],
+                response_format={"type": "json_object"},
+                max_tokens=SCRIPT_MAX_TOKENS, temperature=0.2,
+                extra_body=_THINKING_OFF,
+                langfuse_meta={"podcast": True, "stage": "self_refine_rewrite",
+                               "version": final_version + 1, "topic": topic[:50]},
             )
-            resp.raise_for_status()
-            raw = resp.json()["choices"][0]["message"]["content"]
-            cleaned = re.sub(r"```json\s*|```\s*$", "", raw.strip(), flags=re.MULTILINE).strip()
-            data = _safe_json(cleaned)
-            new_text = "\n".join(
-                seg.get("text", "") for seg in data.get("segments", [])
-            )
-            if not new_text.strip():
-                raise ValueError("empty")
+            new_text = _parse_rewrite_segments(resp.choices[0].message.content or "")
             current = new_text
             final_version += 1
             logger.info("Self-Refine rewrite done: v{}", final_version)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Self-Refine rewrite fail: {}", str(exc)[:60])
+            logger.warning("Self-Refine rewrite fail: {}: {}",
+                           exc.__class__.__name__, str(exc)[:80])
             break
 
-        new_scores = _ds_evaluate(topic, materials, current)
+        new_scores = _ds_evaluate(topic, materials, current, today)
         regressed = any(
-            new_scores.get(d, {}).get("score", 0) < prev_snap.get(d, 0)
-            for d in prev_snap if prev_snap.get(d, 0) >= 4
+            new_scores.get(d, {}).get("score", 0) < prev
+            for d, prev in prev_snap.items() if prev >= 4
         )
         if regressed:
             logger.warning("Self-Refine rewrite regressed, reverting")
             current = prev_script
             final_version -= 1
 
-    meta = {
-        "final_version": final_version,
-        "checks": check_meta,
-        "improved": current != script_text,
-    }
+    meta = {"final_version": final_version, "checks": check_meta,
+            "improved": current != script_text}
     return current, meta
 
 
 # ↑↑↑ Self-Refine 函数结束 ↑↑↑
+
+
+# ── 事实卡抽取层：生成端事实契约 ──
+#
+# 一次性生成里"能用什么事实"是隐式的（模型自己从几千字原文里捞），改为显式两段：
+#   ① 抽事实卡（只搬运不改写）+ 确定性回验（数字必须命中素材、字面重合度达标）
+#   ② 按卡生成（卡=事实白名单+覆盖要求），Self-Refine 改写同样只认卡
+# 评审仍对素材全文（faith 分数语义不变），卡只是生成端约束。
+
+EXTRACT_PROVIDER = "zhipu"
+EXTRACT_MODEL = SCRIPT_MODEL
+
+_EXTRACT_PROMPT = """你是新闻编辑。从新闻素材中抽取「事实卡」，供撰稿人后续写稿使用。
+
+规则：
+1. 只搬运素材中明确出现的信息，禁止推理、补充、换算数字——卡上的每个字都必须能在素材中找到依据；
+2. 每卡必须【完整保留】时间与语气限定词（如「到2030年」「目标」「预计」「将」「计划」「已达」）
+   ——【严禁】把未来目标/规划抽成已实现事实，严禁丢掉「到XX年」这类时间限定；
+3. 每卡一个原子事实（一个数字/一个事件/一个表态/一个时间节点）；
+4. 每卡标注来源素材编号（素材块以【素材N】开头），并附 quote：素材中支持该事实的
+   【连续原文片段】（不少于12字，逐字复制，不得改写）；
+5. 覆盖全部素材的关键事实，宁多勿少；
+6. 只输出 JSON：{{"cards": [{{"src": 1, "fact": "原子事实", "quote": "原文片段"}}]}}
+
+素材：
+{materials}"""
+
+
+def _fact_verifiable(fact: str, quote: str, materials: str) -> bool:
+    """确定性回验：引句必须是素材的逐字子串，卡上数字必须真在素材中（数字边界安全）。
+
+    抽取器自己的幻觉（卡上出现素材没有的事实）比漏抽更糟，宁可错杀。
+    """
+    if len(quote) < 12 or quote not in materials:
+        return False
+    for num in re.findall(r"\d+(?:\.\d+)?", fact):
+        if not re.search(rf"(?<!\d){re.escape(num)}(?!\d)", materials):
+            return False
+    return True
+
+
+def _extract_facts(topic: str, materials: str) -> tuple[str, int, int]:
+    """素材 → 事实卡块。返回 (卡块, 有效卡数, 回验丢弃数)。
+
+    LLM 抽取失败或 0 卡通过回验时返回空块，调用方回退素材原文（管道不因此中断）。
+    """
+    try:
+        resp = gateway.chat(
+            EXTRACT_PROVIDER, model=EXTRACT_MODEL,
+            messages=[{"role": "user", "content": _EXTRACT_PROMPT.format(materials=materials)}],
+            response_format={"type": "json_object"},
+            max_tokens=4000, temperature=0.1,
+            extra_body=_THINKING_OFF,
+            langfuse_meta={"podcast": True, "stage": "fact_extract", "topic": topic[:50]},
+        )
+        data = _llm_json(resp.choices[0].message.content or "")
+        raw_cards = data.get("cards") if isinstance(data.get("cards"), list) else []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("fact extract fail: {}: {}", exc.__class__.__name__, str(exc)[:80])
+        return "", 0, 0
+
+    cards: list[str] = []
+    dropped = 0
+    for c in raw_cards:
+        if not isinstance(c, dict):
+            continue
+        fact = str(c.get("fact", "")).strip()
+        quote = str(c.get("quote", "")).strip()
+        if len(fact) < 6 or not _fact_verifiable(fact, quote, materials):
+            dropped += 1
+            continue
+        cards.append(f"卡{len(cards) + 1}（素材{c.get('src', '?')}）：{fact}")
+
+    if not cards:
+        logger.warning("fact extract: 0 卡通过回验（丢弃 {}），回退素材原文", dropped)
+        return "", 0, dropped
+
+    need = max(len(cards) - 2, round(len(cards) * 0.7))
+    block = (
+        f"【事实卡（共 {len(cards)} 张）】脚本中的所有事实性内容必须出自下列卡片，"
+        f"卡片之外的事实一律不得写入（含推算：不得用卡片数字做四则运算派生新数字）；"
+        f"素材背景语境可在开场/过渡中自然提及。\n"
+        f"【时态纪律】卡片中带「到XX年/目标/将/计划/预计」的是未来规划，"
+        f"必须以未来时态表述，严禁写成已达成；只有带「已达/截至/今日」的才是现状。\n"
+        f"覆盖要求：尽可能多地把卡片内容自然讲进脚本（目标 {need} 张左右）；"
+        f"无法自然容纳的不硬塞，严禁为覆盖卡片而改变事实的时间属性或确定性。\n"
+        f"卡片编号仅用于内部溯源，【禁止】把「（卡N）」等标记写进脚本正文。\n\n"
+        + "\n".join(cards)
+    )
+    logger.info("fact extract: {} 张卡（回验丢弃 {}）", len(cards), dropped)
+    return block, len(cards), dropped
 
 
 _RELEVANCE_PROMPT = """你是新闻编辑，判断检索到的新闻素材能否支撑用户话题的播客生成。
@@ -527,6 +695,9 @@ def generate_script(
     template_block = _template_block(intent.template)
 
     materials = _load_material_text(hits, plan["top_k"])
+    # 事实卡层：生成端事实契约（评审仍对 materials 全文）
+    cards_block, n_cards, n_dropped = _extract_facts(topic_prompt, materials)
+    gen_materials = cards_block or materials
     # 素材命中清单（结构化，落库 + Langfuse，回答"这期引用了哪些新闻"）
     materials_detail = [
         {
@@ -542,14 +713,18 @@ def generate_script(
     common = {
         "minutes": target_minutes,
         "topic_prompt": topic_prompt,
-        "materials": materials,
+        "materials": gen_materials,
         "podcast_title": podcast_title or topic_prompt[:20],
         "host_name": names[0] if names else "新闻主播",
         "host_a_name": names[0] if names else "主持人A",
         "host_b_name": names[1] if len(names) > 1 else "主持人B",
     }
+    date_block = (
+        f"【当前日期（硬信息）】{_today_str()}——脚本中所有日期表述"
+        "（今天/昨日/近日的具体日期）必须与此一致，禁止自行编造日期。\n"
+    )
     if mode == "single":
-        prompt = template_block + SINGLE_PROMPT.format(
+        prompt = date_block + template_block + SINGLE_PROMPT.format(
             script_prompt=script_prompt,
             words_min=plan["words"][0],
             words_max=plan["words"][1],
@@ -558,7 +733,7 @@ def generate_script(
             **common,
         )
     else:
-        prompt = template_block + DUAL_PROMPT.format(
+        prompt = date_block + template_block + DUAL_PROMPT.format(
             script_prompt_a=script_prompt_a,
             script_prompt_b=script_prompt_b,
             words_min=plan["words"][0],
@@ -578,8 +753,9 @@ def generate_script(
                 model=SCRIPT_MODEL,
                 messages=[{"role": "user", "content": prompt + feedback}],
                 response_format={"type": "json_object"},
-                max_tokens=4500,
+                max_tokens=SCRIPT_MAX_TOKENS,
                 temperature=0.7,
+                extra_body=_THINKING_OFF,
                 langfuse_meta={
                     "podcast": True, "mode": mode,
                     "topic": topic_prompt[:50], "target_minutes": target_minutes,
@@ -596,7 +772,8 @@ def generate_script(
                 feedback = (
                     f"\n\n【重要：上一稿仅 {total_chars} 字，太短】"
                     f"必须扩写到 {words_min}~{words_max} 字："
-                    "对素材展开更多细节、背景、追问与回应，禁止注水或重复表述。"
+                    "把尚未用上的【事实卡】内容写进稿件，对已用事实展开背景与影响，"
+                    "禁止注水或重复表述。"
                 )
                 logger.info("script too short ({}/{}), retry with feedback", total_chars, words_min)
                 continue
@@ -605,29 +782,46 @@ def generate_script(
             logger.info("script ok: {} 段 {} 字（目标 {}~{}）", len(segments), total_chars,
                         words_min, words_max)
 
-            # Self-Refine 质量循环：仅单人口播启用（双人不做，保持原有流程）
+            # Self-Refine 质量循环：仅单人口播启用（双人不做，保持原有流程）。
+            # 评审链路故障不阻断出稿：refine 失败时保留 v1，错误记入 refine meta。
+            refine_meta: dict | None = None
             if mode == "single":
-                script_text = "\n".join(
-                    s_.get("text", "") for s_ in segments
-                )
-                refined_text, refine_meta = _self_refine(
-                    topic_prompt, materials, script_text, mode, materials_detail,
-                )
-                if refined_text != script_text:
-                    for s_, line in zip(segments, refined_text.splitlines()):
-                        if line.strip():
-                            s_["text"] = line.strip()
-                    logger.info("Self-Refine 改写完成（v{}）", refine_meta.get("final_version", 1))
+                script_text = "\n".join(s_["text"] for s_ in segments)
+                try:
+                    refined_text, refine_meta = _self_refine(
+                        topic_prompt, materials, script_text, _today_str(),
+                        rewrite_evidence=gen_materials,
+                    )
+                    if refined_text != script_text:
+                        refined_segs = [
+                            {"text": ln.strip()}
+                            for ln in refined_text.splitlines() if ln.strip()
+                        ]
+                        if len(refined_segs) >= 3:
+                            segments = refined_segs
+                            logger.info("Self-Refine 改写完成（v{}）", refine_meta["final_version"])
+                        else:
+                            refine_meta["improved"] = False
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Self-Refine skipped: {}: {}",
+                                   exc.__class__.__name__, str(exc)[:80])
+                    refine_meta = {"final_version": 1, "checks": [], "improved": False,
+                                   "error": f"{exc.__class__.__name__}: {str(exc)[:80]}"}
 
             return {"segments": segments, "materials": materials_detail,
-                    "intent": intent.to_dict()}
+                    "materials_text": materials, "fact_cards": {
+                        "n": n_cards, "dropped": n_dropped, "text": cards_block,
+                    }, "intent": intent.to_dict(),
+                    "refine": refine_meta}
         except Exception as exc:  # noqa: BLE001
             last_err = exc
             logger.warning("script attempt fail: {}: {}", exc.__class__.__name__, str(exc)[:80])
     raise ScriptError(f"脚本生成失败：{last_err}")
 
 
-def _validate(data: dict, mode: str) -> list[dict[str, Any]]:
+def _validate(data: dict | list, mode: str) -> list[dict[str, Any]]:
+    if isinstance(data, list):  # 部分模型返回裸数组（无 segments 包装）
+        data = {"segments": data}
     segments = data.get("segments")
     if not isinstance(segments, list) or not segments:
         raise ValueError("segments 缺失或为空")

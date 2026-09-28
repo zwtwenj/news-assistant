@@ -12,8 +12,8 @@ from loguru import logger
 from app.services.llm.providers import ProviderConfig, get_providers
 from app.services.observability.langfuse_client import get_langfuse
 
-# 沿用 demo 经验：60s 超时 + 1 次重试（防线程池耗尽），理由见 demo app/llm.py 注释
-REQUEST_TIMEOUT = 60
+# 大 prompt（5 素材/事实卡）下免费档尾延迟实测 55s+，60s 会掐掉正常生成
+REQUEST_TIMEOUT = 120
 SDK_MAX_RETRIES = 1
 
 
