@@ -691,7 +691,7 @@ def _search_materials_macro(topic: str, category: str, top_k: int) -> list[dict]
             rr.sort(
                 key=lambda h: (h.get("rerank_score") or 0, h["publish_ts"]), reverse=True
             )
-            strong = [h for h in rr if (h.get("rerank_score") or 0) >= RERANK_MIN_SCORE][:2]
+            strong = rr[:2]  # 宽泛 tool：无 0.25 地板，各子题直接取 top2
             for h in strong:
                 cur = merged.get(h["article_id"])
                 if cur is None or (h.get("rerank_score") or 0) > (cur.get("rerank_score") or 0):
@@ -757,15 +757,19 @@ def _search_materials(
     reranked.sort(
         key=lambda h: (h.get("rerank_score") or 0, h["publish_ts"]), reverse=True
     )
-    # rerank 阀门：rerank 分数跨话题不可校准（同分数在不同话题含义相反，
-    # 阀门实验两轮验证绝对阈值 0.3/0.4 会误杀核心文），故 0.25 仅作垃圾地板——
-    # 低于此分视为类目级沾边直接丢弃；全部低于时保底 top1（素材下限恒为 1，
-    # 单篇素材由 _check_material_relevance 门禁与 partial 提醒机制兜底）
+    # rerank 阀门（自感知）：0.25 地板只在存在断崖时启用——
+    # rerank 分数跨话题不可校准（三轮实验：国内财经断崖 0.5~0.9、国际/宽泛平带
+    # 0.15~0.27，同一分数在不同话题含义相反）。有 ≥0.25 的塔尖 → 按地板截断；
+    # 全员低于 → 分数平带（宽泛/跨域题），不做 0.25 丢弃、按精排序全保留，
+    # 相关性由下游 _check_material_relevance 门禁判定
     relevant = [h for h in reranked if (h.get("rerank_score") or 0) >= RERANK_MIN_SCORE]
-    if not relevant:
-        relevant = reranked[:1]
-        logger.warning("rerank 全部低于阀门 {}，保底 top1", RERANK_MIN_SCORE)
-    return relevant[: top_k + 2], intent
+    if relevant:
+        logger.info("rerank 断崖命中 {}: 按地板保留 {}/{}", RERANK_MIN_SCORE,
+                    len(relevant), len(reranked))
+        return relevant[: top_k + 2], intent
+    logger.info("rerank 平带（无 ≥{} 断崖）：宽泛模式，按精排序全保留 {} 篇",
+                RERANK_MIN_SCORE, len(reranked))
+    return reranked[: top_k + 2], intent
 
 
 def _load_material_text(hits: list[dict[str, Any]], top_k: int) -> str:
