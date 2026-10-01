@@ -69,10 +69,26 @@ def gen_script(self, podcast_id: int) -> str:
             if result["intent"].get("title") and p.title is None:
                 p.title = result["intent"]["title"]
         p.error = None
-        # TTS 关闭模式（调试脚本用）：脚本完成即成功，不做语音合成
-        p.status = "succeeded" if not get_settings().podcast_tts_enabled else "synthesizing"
+        # 质量终态路由（plan：评审合格自动 TTS，不合格交用户决断）：
+        # passed=任一轮评审全维度≥4；双人模式/评审链路故障无 refine → 默认放行
+        refine = result.get("refine") or {}
+        quality_review = {
+            "passed": refine.get("passed", True),
+            "final_version": refine.get("final_version"),
+            "improved": refine.get("improved"),
+            "checks": refine.get("checks", []),
+        }
+        p.quality_review = quality_review
+        tts_enabled = get_settings().podcast_tts_enabled
+        if tts_enabled and not quality_review["passed"]:
+            p.status = "review_failed"  # 待用户决断：synth_tts 会跳过，决断端点恢复
+        else:
+            # TTS 关闭模式（调试脚本用）：脚本完成即成功，不做语音合成
+            p.status = "succeeded" if not tts_enabled else "synthesizing"
         db.commit()
-        return f'script ok({len(result["segments"])}段, 素材{len(result["materials"])}条)'
+        verdict = "质量合格" if quality_review["passed"] else "质量未达标，待用户决断"
+        return (f'script ok({len(result["segments"])}段, '
+                f'素材{len(result["materials"])}条, {verdict})')
     finally:
         db.close()
 
@@ -86,6 +102,8 @@ def synth_tts(self, podcast_id: int) -> str:
             return f"skip(podcast={podcast_id})"
         if p.status in ("composing", "succeeded"):
             return f"skip(podcast={podcast_id})"
+        if p.status == "review_failed":  # 质量未达标待用户决断：不自动合成
+            return f"pending-decision(podcast={podcast_id})"
         work_dir = _media_root() / "podcasts" / str(p.id)
         try:
             voice_map = speaker_voice_map(p.voice_a, p.voice_b)
@@ -148,6 +166,14 @@ def compose_audio(self, podcast_id: int) -> str:
         return f"podcast {p.id} succeeded"
     finally:
         db.close()
+
+
+def dispatch_synthesis(podcast_id: int) -> None:
+    """用户决断「继续合成」后：从 synth_tts 恢复（compose_audio 链尾收音）。"""
+    chain(
+        synth_tts.si(podcast_id),
+        compose_audio.si(podcast_id),
+    ).apply_async()
 
 
 def dispatch_podcast_pipeline(podcast_id: int) -> None:

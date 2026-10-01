@@ -59,11 +59,13 @@ def analyze(
     for _attempt in range(2):
         try:
             resp = gateway.chat(
-                "deepseek",
+                "zhipu",
+                model="glm-4.5-air",  # 付费档：deepseek-v4-flash 服务器 IP 被限流（2026-09-29）
                 messages=[{"role": "user", "content": text}],
                 response_format={"type": "json_object"},
                 max_tokens=800,
                 temperature=0.2,
+                extra_body={"thinking": {"type": "disabled"}},
                 langfuse_meta=langfuse_meta,
             )
             raw = (resp.choices[0].message.content or "").strip()

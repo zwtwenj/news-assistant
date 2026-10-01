@@ -54,6 +54,8 @@ class PodcastOut(BaseModel):
     script: list | None
     audio_url: str | None
     duration_sec: int | None
+    # 质量评审 {passed, final_version, checks}：review_failed 状态的用户决断依据
+    quality_review: dict | None = None
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -68,6 +70,10 @@ class PodcastOut(BaseModel):
         if hasattr(v, "astimezone"):
             return v.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
         return str(v) or ""
+
+
+class PodcastSynthesisDecision(BaseModel):
+    continue_synthesis: bool
 
 
 class PodcastCreateOut(BaseModel):

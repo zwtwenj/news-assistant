@@ -11,6 +11,7 @@
 import json
 import re
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -21,7 +22,9 @@ from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.models.article import Article
 from app.services.llm.gateway import gateway
+from app.services.news import simhash as simhash_svc
 from app.services.news import vector as vector_svc
+from app.services.news.categories import detect_macro
 from app.services.podcast import voices as voices_svc
 from app.services.podcast.query_understanding import TopicIntent, understand_topic
 
@@ -32,6 +35,7 @@ SCRIPT_MODEL = "glm-4.5-air"
 SCRIPT_MAX_TOKENS = 8000
 _THINKING_OFF = {"thinking": {"type": "disabled"}}
 SEARCH_DAYS = 7
+RERANK_MIN_SCORE = 0.25  # rerank 阀门：低于直接丢弃（垃圾地板，非好差分界）
 MIN_SCORE = 0.15  # 检索分数下限（rerank 对泛 query 打分保守，粗筛放宽交给精排排序）
 CONTENT_EXCERPT = 2000  # 每条素材注入的正文节选字数（新闻导语/背景常在文中后段，不宜截太狠）
 
@@ -84,8 +88,9 @@ SINGLE_PROMPT = """你是资深新闻节目撰稿人，为早间新闻电台写�
    （听完导语就知道发生了什么）→ 再展开细节与背景 → 收尾总结；
 4. 信息优先：口语化是"怎么说"，不能牺牲"说什么"——
    每个段落必须让听众获得具体事实，禁止空泛的感慨和过渡；
-5. 全长 {words_min}~{words_max} 字（语速约 280 字/分钟），
+5. 全长不超过 {words_max} 字（语速约 280 字/分钟），
    切分为 {seg_min}~{seg_max} 个自然段落，每段一个完整意思；
+   把素材讲透、讲完自然收尾——不硬凑字数；
 6. 只输出 JSON：{{"scratchpad": "各条新闻要素梳理", "segments": [{{"text": "段落内容"}}]}}"""
 
 DUAL_PROMPT = """你是资深播客导演，为一期约 {minutes} 分钟的双人新闻对谈节目写对话稿。
@@ -137,7 +142,7 @@ DUAL_PROMPT = """你是资深播客导演，为一期约 {minutes} 分钟的双�
 
 6. 结构与长度：
    - 共 {turns_min}~{turns_max} 轮对话，每句不超过 100 字；
-   - 总量约 {words_min}~{words_max} 字（语速约 280 字/分钟）；
+   - 总量不超过 {words_max} 字（语速约 280 字/分钟），讲透即收，不硬凑；
    - 开场：A 或 B 用一句自然的引入（不要念节目名）；
    - 收尾：两人各一句简短的收束感言，不生硬。
 
@@ -153,16 +158,17 @@ CHARS_PER_MINUTE = 280
 
 
 def _plan(target_minutes: int) -> dict[str, Any]:
-    """时长 → 检索上限与脚本长度区间。素材下限恒为 1（不足则深聊）。
+    """时长 → 检索上限与脚本字数上限。素材下限恒为 1（不足则深聊）。
 
-    字数 = 目标分钟 × 280，再留 ~18% 余量（LLM 普遍写不够字数，宁长勿短）。
+    字数只设上限、不设下限（2026-09-29：写手不再被要求凑字数——
+    素材密度不足时凑字数只会催生编造；上限沿用原区间上沿，中篇 1800）。
     """
     if target_minutes <= 2:  # 短（1~2 分钟）
-        return {"top_k": 1, "words": (550, 750), "segs": (4, 6), "turns": (10, 14)}
+        return {"top_k": 1, "words": (0, 750), "segs": (4, 6), "turns": (10, 14)}
     if target_minutes <= 5:  # 中（3~5 分钟）
-        return {"top_k": 5, "words": (1150, 1500), "segs": (7, 10), "turns": (20, 28)}
+        return {"top_k": 5, "words": (0, 1800), "segs": (7, 10), "turns": (20, 28)}
     # 长（5~8 分钟）
-    return {"top_k": 5, "words": (1900, 2400), "segs": (12, 16), "turns": (34, 44)}
+    return {"top_k": 5, "words": (0, 2400), "segs": (12, 16), "turns": (34, 44)}
 
 
 # 话题→标签映射已迁移至 query_understanding.py（两层 query 理解）
@@ -176,11 +182,16 @@ def _plan(target_minutes: int) -> dict[str, Any]:
 
 _DS_EVAL_MODEL = "deepseek-flash"
 
+# Self-Refine：评审→重写循环两轮（评 v1、评 v2），写手最多三版
+# （v3 为评②不合格后的终版盲写，质量由回归复评把关——退化即回退 v2）
+REFINE_MAX_ROUNDS = 2
+
 _DIM_LABELS = {
     "relevance": "相关性",
     "faithfulness": "事实忠实度",
     "completeness": "信息完整度",
     "readability": "口播可读性",
+    "utilization": "素材利用率",
 }
 
 
@@ -192,8 +203,9 @@ def _today_str() -> str:
 
 def _ds_evaluate(
     topic: str, materials: str, script_text: str, today: str = "",
+    cards: str = "",
 ) -> dict:
-    """DeepSeek 4 维评审单人口播稿，返回 {维度: {score, reason}}。"""
+    """DeepSeek 评审单人口播稿（4 维 + 有事实卡时加素材利用率），返回 {维度: {score, reason}}。"""
     s = get_settings()
     ds_url = s.deepseek_base_url.rstrip("/") + "/chat/completions"
     n_mat = len(set(re.findall(r"【素材\d+】", materials)))
@@ -231,18 +243,30 @@ def _ds_evaluate(
         "completeness": (
             f"你是播客听众。话题「{topic}」的脚本是否覆盖了关键信息，打分 1~5。\n\n"
             f"脚本：\n{script_text}\n\n"
-            + (f"素材量参考：{thin_note}。\n" if thin_note else "")
-            + "5=素材与话题的关键信息全覆盖；3=覆盖一半左右；1=只用了极小部分。"
+            f"素材量参考：共 {n_mat} 篇。{thin_note}\n"
+            "【篇幅长短不作为评分因素】只看素材所含关键信息是否被脚本覆盖。\n"
+            "5=素材与话题的关键信息全覆盖；3=覆盖一半左右；1=只用了极小部分。"
             '只输出 JSON：{"score": 1~5, "reason": "15字内"}'
         ),
         "readability": (
             "你是新闻电台制作人。这是一篇【单人口播稿】，由一位主持人独立播报，"
             "不是双人对谈——用口播稿标准评，不要用对谈标准。看：结构清晰"
-            "（导语→细节→收尾）、口语自然不念稿、节奏适中。\n\n"
+            "（导语→细节→收尾）、口语自然不念稿、节奏适中；"
+            "【篇幅长短不作为评分因素】。\n\n"
             f"脚本：\n{script_text}\n\n"
             '只输出 JSON：{"score": 1~5, "reason": "15字内"}'
         ),
     }
+    if cards:
+        prompts["utilization"] = (
+            "你是播客主编。以下是撰稿时可用的【事实卡】清单（每卡一个原子事实，"
+            "来自检索素材）与据此写成的脚本。请评估【素材利用率】："
+            "脚本实质覆盖了多少张卡片的关键信息（数一数被用到的卡；"
+            "同一事件的多张卡合并讲述也算覆盖）。\n\n"
+            f"事实卡清单：\n{cards}\n\n脚本：\n{script_text}\n\n"
+            "打分 1~5：5=绝大部分卡片被实质用到；3=用到一半左右；1=只用极少数卡片。"
+            'reason 指出未被使用的关键卡片。只输出 JSON：{"score": 1~5, "reason": "30字内"}'
+        )
     scores = {}
     for dim, p in prompts.items():
         try:
@@ -304,20 +328,23 @@ def _parse_rewrite_segments(text: str) -> str:
 
 def _self_refine(
     topic: str, materials: str, script_text: str, today: str = "",
-    rewrite_evidence: str = "",
+    rewrite_evidence: str = "", cards: str = "",
 ) -> tuple[str, dict]:
-    """Self-Refine（仅单人）：DeepSeek 评 → 只改不达标维度 → 退化回退。
+    """Self-Refine（仅单人）：LLM 评 → 只改不达标维度 → 退化回退。
 
-    最多 2 次评审 / 1 次改写；评审对 materials 全文，改写只认 rewrite_evidence
+    评审→重写循环两轮（评 v1、评 v2），写手最多三版——v3 为评②仍不合格时
+    按意见的终版盲写，不再评审（质量由回归复评把关，退化即回退 v2）。
+    评审对 materials 全文 + 事实卡（素材利用率维度），改写只认 rewrite_evidence
     （事实卡，缺省回退 materials），全程不检索。
-    返回 (终版文本, meta)；meta 含 final_version / checks / improved。
+    返回 (终版文本, meta)；meta 含 final_version / checks / improved / passed
+    （passed=任一轮全维度≥4，终态路由：合格自动 TTS，不合格交用户决断）。
     """
     current = script_text
     final_version = 1
     check_meta: list[dict] = []
 
-    for check_round in range(1, 3):
-        scores = _ds_evaluate(topic, materials, current, today)
+    for check_round in range(1, REFINE_MAX_ROUNDS + 1):
+        scores = _ds_evaluate(topic, materials, current, today, cards=cards)
         all_pass = all(v.get("score", 0) >= 4 for v in scores.values())
         check_meta.append({"check": check_round, "all_pass": all_pass, "scores": scores})
         logger.info("Self-Refine check {}: {}", check_round, "PASS" if all_pass else "FAIL")
@@ -327,8 +354,8 @@ def _self_refine(
         if any(v.get("score", 0) == 0 for v in scores.values()):
             logger.warning("Self-Refine: 评审调用失败（score=0），终止 refine")
             break
-        if check_round >= 2:
-            break  # 已评 2 次，当前版本为终版
+        if check_round >= REFINE_MAX_ROUNDS:
+            break  # 已评满 3 轮，当前版本为终版
 
         failed = {d: v for d, v in scores.items() if v.get("score", 0) < 4}
         passed = [d for d, v in scores.items() if v.get("score", 0) >= 4]
@@ -383,7 +410,8 @@ def _self_refine(
             final_version -= 1
 
     meta = {"final_version": final_version, "checks": check_meta,
-            "improved": current != script_text}
+            "improved": current != script_text,
+            "passed": any(c.get("all_pass") for c in check_meta)}
     return current, meta
 
 
@@ -550,6 +578,154 @@ def _hyde_doc(topic: str) -> str | None:
         return None
 
 
+def _group_events(category: str, rows: list) -> list[dict]:
+    """宏观题 → 把类目近期文章按【新闻事件】分组（索引锚定的机械聚类）。
+
+    不让模型"提炼子话题"（会锚定单一热点事件，实测约半数概率产出同事件×3），
+    只让它做纯分组——输出组名+成员编号，模型无发挥空间。
+    返回 [{"name": 组名, "query": 代表标题}...]（3~5 组，query 供精确检索）。
+    """
+    titles = "\n".join(f"{i + 1}. {t[:50]}" for i, (t, _s) in enumerate(rows))
+    prompt = (
+        f"你是新闻编辑。下面是 {category} 类目近期的 {len(rows)} 条新闻（带编号）。\n\n"
+        f"{titles}\n\n"
+        f"任务：把这些新闻按【新闻事件】分组——同一事件的多篇报道归为一组，"
+        f"不同事件不能混入同组。输出 3~5 个组，每组给出一个事件组名，"
+        f"并列出该组所有成员的编号。\n"
+        f'只输出 JSON：{{"groups": [{{"name": "事件组名", "items": [1, 4, 5]}}]}}'
+    )
+    try:
+        resp = gateway.chat(
+            "zhipu", model="glm-4.5-air",
+            messages=[{"role": "user", "content": prompt + "\n\n直接输出 JSON，不要解释。"}],
+            response_format={"type": "json_object"},
+            max_tokens=1200, temperature=0.2,
+            extra_body=_THINKING_OFF,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        cl = re.sub(r"```json\s*|```\s*$", "", raw, flags=re.MULTILINE).strip()
+        m = re.search(r"\{.*\}", cl, re.DOTALL)
+        data = json.loads(m.group()) if m else {}
+        groups = data.get("groups") if isinstance(data.get("groups"), list) else []
+        out: list[dict] = []
+        used: set[int] = set()
+        for g in groups:
+            if not isinstance(g, dict):
+                continue
+            name = str(g.get("name", "")).strip()
+            items = [i for i in g.get("items", []) if isinstance(i, int) and 1 <= i <= len(rows)]
+            if not name or not items or used.intersection(items):
+                continue
+            used.update(items)
+            first_title = rows[items[0] - 1][0].strip()
+            out.append({"name": name, "query": first_title})
+            if len(out) >= 5:
+                break
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("事件分组失败: {}", str(exc)[:80])
+        return []
+
+
+def _search_materials_macro(topic: str, category: str, top_k: int) -> list[dict]:
+    """宏观话题检索：类目近期文章 → 子题分解 → 逐子题精确检索（0.25 阀门）→ 合并去重。
+
+    宽泛查询在 dense/sparse 上都是均匀弱匹配（rerank 实测 ~0.18 平带），无法排序；
+    正解是按子话题逐个精确检索——每个子题都是具体问题，呈现断崖形态精准命中源文章。
+    """
+    cutoff_ts = int(time.time()) - SEARCH_DAYS * 86400
+    cutoff = datetime.fromtimestamp(cutoff_ts, tz=UTC)
+    with SessionLocal() as db:
+        rows = db.execute(
+            select(Article.title, Article.summary, Article.publish_time)
+            .where(
+                Article.deleted_at.is_(None),
+                Article.category == category,
+                Article.publish_time.is_not(None),
+                Article.publish_time >= cutoff,
+                Article.summary.is_not(None),
+            )
+            .order_by(Article.publish_time.desc())
+            .limit(300)
+        ).fetchall()
+    if not rows:
+        return []
+    # ① 事件级去重：新浪滚动流同一事件会被多个子源反复推送（实测一个事件可占
+    # top-50 的多个变体位）——标题 simhash 折叠
+    # ② 按天分层采样：每天只取最新 3 条、跨 7 天——纯 recency top-N 会被
+    # "当天最热事件"锚定（实测 3 个子题全是同一事件变体），分层后样本天然多样
+    sampled: list[tuple[str, str]] = []
+    title_hashes: list[int] = []
+    day_count: dict[str, int] = {}
+    for t, s, pt in rows:
+        day = pt.strftime("%m-%d")
+        if day_count.get(day, 0) >= 3:
+            continue
+        h = simhash_svc.simhash(t)
+        if any(simhash_svc.is_similar(h, prev) for prev in title_hashes):
+            continue
+        title_hashes.append(h)
+        day_count[day] = day_count.get(day, 0) + 1
+        sampled.append((t, s))
+        if len(sampled) >= 30:
+            break
+    groups = _group_events(category, sampled)
+    if not groups:
+        return []
+    logger.info("宏观题 [{}] 类目 {} 事件组: {}", topic[:30], category,
+                [g["name"] for g in groups])
+    cutoff_ts = int(time.time()) - SEARCH_DAYS * 86400
+    merged: dict[int, dict[str, Any]] = {}
+    for g in groups:
+        st = g["query"]
+        try:
+            hyde = _hyde_doc(st)
+            hits = vector_svc.hybrid_search(
+                st, top_k=8, publish_after_ts=cutoff_ts,
+                extra_queries=[hyde] if hyde else None,
+            )
+            hits = [h for h in hits if h["score"] >= MIN_SCORE]
+            if not hits:
+                continue
+            rr = vector_svc.rerank(st, hits)
+            rr.sort(
+                key=lambda h: (h.get("rerank_score") or 0, h["publish_ts"]), reverse=True
+            )
+            strong = [h for h in rr if (h.get("rerank_score") or 0) >= RERANK_MIN_SCORE][:2]
+            for h in strong:
+                cur = merged.get(h["article_id"])
+                if cur is None or (h.get("rerank_score") or 0) > (cur.get("rerank_score") or 0):
+                    merged[h["article_id"]] = h
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("子题检索失败 [{}]: {}", st[:30], str(exc)[:60])
+        time.sleep(0.2)
+    out = sorted(
+        merged.values(),
+        key=lambda h: (h.get("rerank_score") or 0, h["publish_ts"]), reverse=True
+    )
+    logger.info("宏观检索：{} 个事件组合并去重后 {} 篇", len(groups), len(out))
+    return out[: top_k + 2]
+
+
+def search_materials_routed(
+    topic: str, top_k: int, intent_in: TopicIntent | None = None
+) -> tuple[list[dict[str, Any]], TopicIntent, str]:
+    """带宏观/具体路由的检索入口（生成与评测共用）。
+
+    detect_macro 判宏观 → 类目子题分解管道；判具体（或判断失败，None 安全放行）
+    → 精确检索管道。返回 (hits, intent, route)。
+    """
+    macro_cat = detect_macro(topic)
+    if macro_cat:
+        hits = _search_materials_macro(topic, macro_cat, top_k)
+        if hits:
+            intent = understand_topic(topic)
+            return hits, intent, f"macro:{macro_cat}"
+        logger.warning("宏观检索 0 命中，回退精确检索管道")
+    hits, intent = _search_materials(topic, top_k, intent=intent_in)
+    return hits, intent, "specific"
+
+
 def _search_materials(
     topic: str, top_k: int, intent: TopicIntent | None = None
 ) -> tuple[list[dict[str, Any]], TopicIntent]:
@@ -581,7 +757,15 @@ def _search_materials(
     reranked.sort(
         key=lambda h: (h.get("rerank_score") or 0, h["publish_ts"]), reverse=True
     )
-    return reranked[: top_k + 2], intent
+    # rerank 阀门：rerank 分数跨话题不可校准（同分数在不同话题含义相反，
+    # 阀门实验两轮验证绝对阈值 0.3/0.4 会误杀核心文），故 0.25 仅作垃圾地板——
+    # 低于此分视为类目级沾边直接丢弃；全部低于时保底 top1（素材下限恒为 1，
+    # 单篇素材由 _check_material_relevance 门禁与 partial 提醒机制兜底）
+    relevant = [h for h in reranked if (h.get("rerank_score") or 0) >= RERANK_MIN_SCORE]
+    if not relevant:
+        relevant = reranked[:1]
+        logger.warning("rerank 全部低于阀门 {}，保底 top1", RERANK_MIN_SCORE)
+    return relevant[: top_k + 2], intent
 
 
 def _load_material_text(hits: list[dict[str, Any]], top_k: int) -> str:
@@ -679,7 +863,11 @@ def generate_script(
         if query_rewrite
         else None
     )
-    hits, intent = _search_materials(topic_prompt, plan["top_k"], intent=intent_in)
+    # ── 宏观/具体路由：宏观题走类目子题分解，具体题走精确检索（两管道共享下游）──
+    hits, intent, route = search_materials_routed(
+        topic_prompt, plan["top_k"], intent_in=intent_in
+    )
+    logger.info("检索路由 [{}]: 素材 {} 篇", route, len(hits))
     if not hits:
         raise ScriptError("素材不足，无法为你生成播客：近期新闻库中没有与话题相关的内容")
 
@@ -726,7 +914,6 @@ def generate_script(
     if mode == "single":
         prompt = date_block + template_block + SINGLE_PROMPT.format(
             script_prompt=script_prompt,
-            words_min=plan["words"][0],
             words_max=plan["words"][1],
             seg_min=plan["segs"][0],
             seg_max=plan["segs"][1],
@@ -736,7 +923,6 @@ def generate_script(
         prompt = date_block + template_block + DUAL_PROMPT.format(
             script_prompt_a=script_prompt_a,
             script_prompt_b=script_prompt_b,
-            words_min=plan["words"][0],
             words_max=plan["words"][1],
             turns_min=plan["turns"][0],
             turns_max=plan["turns"][1],
@@ -744,14 +930,13 @@ def generate_script(
         )
 
     last_err: Exception | None = None
-    words_min, words_max = plan["words"]
-    feedback = ""  # 字数不足时的定向扩写反馈（比抽象的字数要求有效）
+    words_max = plan["words"][1]
     for attempt in range(2):
         try:
             resp = gateway.chat(
                 SCRIPT_PROVIDER,
                 model=SCRIPT_MODEL,
-                messages=[{"role": "user", "content": prompt + feedback}],
+                messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
                 max_tokens=SCRIPT_MAX_TOKENS,
                 temperature=0.7,
@@ -768,19 +953,8 @@ def generate_script(
                 raise ValueError("LLM 返回空内容")
             segments = _validate(json.loads(raw), mode)
             total_chars = sum(len(s["text"]) for s in segments)
-            if total_chars < words_min * 0.85 and attempt == 0:
-                feedback = (
-                    f"\n\n【重要：上一稿仅 {total_chars} 字，太短】"
-                    f"必须扩写到 {words_min}~{words_max} 字："
-                    "把尚未用上的【事实卡】内容写进稿件，对已用事实展开背景与影响，"
-                    "禁止注水或重复表述。"
-                )
-                logger.info("script too short ({}/{}), retry with feedback", total_chars, words_min)
-                continue
-            if total_chars < words_min * 0.85:
-                logger.warning("script still short after retry: {}/{}", total_chars, words_min)
-            logger.info("script ok: {} 段 {} 字（目标 {}~{}）", len(segments), total_chars,
-                        words_min, words_max)
+            logger.info("script ok: {} 段 {} 字（上限 {}）", len(segments), total_chars,
+                        words_max)
 
             # Self-Refine 质量循环：仅单人口播启用（双人不做，保持原有流程）。
             # 评审链路故障不阻断出稿：refine 失败时保留 v1，错误记入 refine meta。
@@ -790,7 +964,7 @@ def generate_script(
                 try:
                     refined_text, refine_meta = _self_refine(
                         topic_prompt, materials, script_text, _today_str(),
-                        rewrite_evidence=gen_materials,
+                        rewrite_evidence=gen_materials, cards=cards_block,
                     )
                     if refined_text != script_text:
                         refined_segs = [

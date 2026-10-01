@@ -7,7 +7,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 # 状态机：pending → scripting → synthesizing → composing → succeeded / failed
-P_STATUSES = ("pending", "scripting", "synthesizing", "composing", "succeeded", "failed")
+P_STATUSES = ("pending", "scripting", "synthesizing", "composing", "succeeded",
+              "failed", "review_failed")  # review_failed=质量未达标，待用户决断
 
 
 class Podcast(Base):
@@ -39,6 +40,9 @@ class Podcast(Base):
     materials: Mapped[list | None] = mapped_column(JSONB)
     # query 重写产物 {tags, rag_query, template{opening,ending}, via}：多节点拆分 JSON，后管可调试
     query_rewrite: Mapped[dict | None] = mapped_column(JSONB)
+    # 质量评审产物 {passed, final_version, improved, checks[{check,all_pass,scores}]}：
+    # review_failed 状态下供用户决断是否继续合成
+    quality_review: Mapped[dict | None] = mapped_column(JSONB)
     audio_url: Mapped[str | None] = mapped_column(String(300))
     duration_sec: Mapped[int | None] = mapped_column(Integer)
     size_bytes: Mapped[int | None] = mapped_column(Integer)

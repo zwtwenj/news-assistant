@@ -6,9 +6,15 @@ from app.api.deps import DB, CurrentUser
 from app.core.redis_client import redis_client
 from app.models.admin_host import AdminHost
 from app.models.podcast import Podcast
-from app.schemas.podcast import PodcastCreate, PodcastCreateOut, PodcastOut, PodcastUpdateIn
+from app.schemas.podcast import (
+    PodcastCreate,
+    PodcastCreateOut,
+    PodcastOut,
+    PodcastSynthesisDecision,
+    PodcastUpdateIn,
+)
 from app.services.storage import oss as oss_svc
-from app.tasks.podcast import dispatch_podcast_pipeline
+from app.tasks.podcast import dispatch_podcast_pipeline, dispatch_synthesis
 
 router = APIRouter(prefix="/podcasts", tags=["podcasts"])
 
@@ -146,6 +152,27 @@ def podcast_quota(user: CurrentUser) -> dict:
 def get_podcast(podcast_id: int, db: DB, user: CurrentUser) -> PodcastOut:
     p = _get_owned(db, user, podcast_id)
     return PodcastOut.model_validate(p)
+
+
+@router.post("/{podcast_id}/synthesis-decision")
+def synthesis_decision(
+    podcast_id: int, body: PodcastSynthesisDecision, db: DB, user: CurrentUser
+) -> dict:
+    """质量评审不合格（review_failed）后的用户决断：是否继续语音合成。
+
+    continue_synthesis=true → 状态置 synthesizing 并派发合成链（synth_tts→compose_audio）；
+    false → 保持 review_failed（用户可删除或稍后再决断）。
+    """
+    p = _get_owned(db, user, podcast_id)
+    if p.status != "review_failed":
+        raise HTTPException(status_code=409, detail="该播客不在质量待决断状态")
+    if not body.continue_synthesis:
+        return {"status": p.status, "decision": "declined"}
+    p.status = "synthesizing"
+    p.error = None
+    db.commit()
+    dispatch_synthesis(podcast_id)
+    return {"status": "synthesizing", "decision": "continued"}
 
 
 @router.patch("/{podcast_id}")
