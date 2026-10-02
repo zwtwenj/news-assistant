@@ -436,22 +436,50 @@ _EXTRACT_PROMPT = """你是新闻编辑。从新闻素材中抽取「事实卡�
 1. 只搬运素材中明确出现的信息，禁止推理、补充、换算数字——卡上的每个字都必须能在素材中找到依据；
 2. 每卡必须【完整保留】时间与语气限定词（如「到2030年」「目标」「预计」「将」「计划」「已达」）
    ——【严禁】把未来目标/规划抽成已实现事实，严禁丢掉「到XX年」这类时间限定；
-3. 每卡一个原子事实（一个数字/一个事件/一个表态/一个时间节点）；
+3. 每卡一个原子事实，覆盖四类：【参数/数字】、【事件/动作】、
+   【因果/动机】（素材明确解释的原因、目的、解决的问题，如「分体电池可分散热量」）、
+   【评价/对比】（素材明确给出的行业地位、对比结论，如「被称为全球最小」）；
 4. 每卡标注来源素材编号（素材块以【素材N】开头），并附 quote：素材中支持该事实的
    【连续原文片段】（不少于12字，逐字复制，不得改写）；
-5. 覆盖全部素材的关键事实，宁多勿少；
+5. 覆盖全部素材的关键事实，宁多勿少；标题中出现的关键数字与结论必须入卡；
 6. 只输出 JSON：{{"cards": [{{"src": 1, "fact": "原子事实", "quote": "原文片段"}}]}}
 
 素材：
 {materials}"""
 
 
-def _fact_verifiable(fact: str, quote: str, materials: str) -> bool:
-    """确定性回验：引句必须是素材的逐字子串，卡上数字必须真在素材中（数字边界安全）。
+def _norm_text(t: str) -> str:
+    """匹配用规范化：去空白与常见标点/引号差异（摘要转述 vs 正文原文的措辞差）。"""
+    return re.sub(r"[\s，。、“”‘’\'\"：；！？《》()（）【】\-—·]", "", t or "")
 
-    抽取器自己的幻觉（卡上出现素材没有的事实）比漏抽更糟，宁可错杀。
+
+def _fact_verifiable(fact: str, quote: str, materials: str) -> bool:
+    """确定性回验：引句锚定 + 卡上数字必须在素材中（数字边界安全）。
+
+    锚定三级容错：①quote 逐字子串；②规范化后子串（去空白/标点）；
+    ③quote 与素材的最长公共子串 ≥ quote 的 70%（摘要改写容忍）。
+    幻觉卡（三级全失败）比漏抽更糟，宁可错杀。
     """
-    if len(quote) < 12 or quote not in materials:
+    if len(quote) < 12:
+        return False
+    if quote in materials:
+        anchored = True
+    else:
+        nq, nm = _norm_text(quote), _norm_text(materials)
+        anchored = nq in nm
+    if not anchored:
+        # 最长公共子串占比（quote 相对素材改写幅度容忍 30%）
+        nq, nm = _norm_text(quote), _norm_text(materials)
+        best, dp_prev = 0, [0] * (len(nq) + 1)
+        for ch in nm:
+            dp_cur = [0] * (len(nq) + 1)
+            for i, c in enumerate(nq):
+                if c == ch:
+                    dp_cur[i + 1] = dp_prev[i] + 1
+                    best = max(best, dp_cur[i + 1])
+            dp_prev = dp_cur
+        anchored = len(nq) and best / len(nq) >= 0.7
+    if not anchored:
         return False
     for num in re.findall(r"\d+(?:\.\d+)?", fact):
         if not re.search(rf"(?<!\d){re.escape(num)}(?!\d)", materials):
@@ -496,11 +524,20 @@ def _extract_facts(topic: str, materials: str) -> tuple[str, int, int]:
         return "", 0, dropped
 
     need = max(len(cards) - 2, round(len(cards) * 0.7))
+    # 兜底告知：卡片信息量不足以支撑常规篇幅时，明示写手"讲完即收"
+    # （v10f 实测：卡块 <400 字时写手会用参数化知识续写产品故事，faith 失分主因）
+    thin_note = (
+        "【信息量提示】卡片内容讲完后自然收尾，"
+        "不得续写行业影响、未来展望、业内人士观点等素材外内容。\n"
+        if len(cards) <= 5
+        else ""
+    )
     block = (
         f"【事实卡（共 {len(cards)} 张）】脚本中的所有事实性内容必须出自下列卡片，"
         f"卡片之外的事实一律不得写入（含推算：不得用卡片数字做四则运算派生新数字）；"
         f"素材背景语境可在开场/过渡中自然提及。\n"
-        f"【时态纪律】卡片中带「到XX年/目标/将/计划/预计」的是未来规划，"
+        + thin_note
+        + f"【时态纪律】卡片中带「到XX年/目标/将/计划/预计」的是未来规划，"
         f"必须以未来时态表述，严禁写成已达成；只有带「已达/截至/今日」的才是现状。\n"
         f"覆盖要求：尽可能多地把卡片内容自然讲进脚本（目标 {need} 张左右）；"
         f"无法自然容纳的不硬塞，严禁为覆盖卡片而改变事实的时间属性或确定性。\n"
@@ -639,7 +676,7 @@ def _search_materials_macro(topic: str, category: str, top_k: int) -> list[dict]
     cutoff = datetime.fromtimestamp(cutoff_ts, tz=UTC)
     with SessionLocal() as db:
         rows = db.execute(
-            select(Article.title, Article.summary, Article.publish_time)
+            select(Article.id, Article.title, Article.summary, Article.publish_time)
             .where(
                 Article.deleted_at.is_(None),
                 Article.category == category,
@@ -648,18 +685,22 @@ def _search_materials_macro(topic: str, category: str, top_k: int) -> list[dict]
                 Article.summary.is_not(None),
             )
             .order_by(Article.publish_time.desc())
-            .limit(300)
+            .limit(2000)
         ).fetchall()
     if not rows:
         return []
+    row_by_id = {r[0]: r for r in rows}
     # ① 事件级去重：新浪滚动流同一事件会被多个子源反复推送（实测一个事件可占
     # top-50 的多个变体位）——标题 simhash 折叠
     # ② 按天分层采样：每天只取最新 3 条、跨 7 天——纯 recency top-N 会被
     # "当天最热事件"锚定（实测 3 个子题全是同一事件变体），分层后样本天然多样
+    # LIMIT 放宽到 2000：保证 7 天各日都进入分层视野（此前 300 被最新两天占满，
+    # 09-25~29 的 1600+ 篇财经文从未进入采样）
     sampled: list[tuple[str, str]] = []
+    sampled_ids: set[int] = set()
     title_hashes: list[int] = []
     day_count: dict[str, int] = {}
-    for t, s, pt in rows:
+    for aid, t, s, pt in rows:
         day = pt.strftime("%m-%d")
         if day_count.get(day, 0) >= 3:
             continue
@@ -668,9 +709,33 @@ def _search_materials_macro(topic: str, category: str, top_k: int) -> list[dict]
             continue
         title_hashes.append(h)
         day_count[day] = day_count.get(day, 0) + 1
+        sampled_ids.add(aid)
         sampled.append((t, s))
         if len(sampled) >= 30:
             break
+    # ③ 查询种子召回池强制入样：与话题直接相关的核心文不被 day-cap/去重挤掉
+    #    （PMI 类核心文可能不在分层采样的当日 top3 里）
+    try:
+        seed_hyde = _hyde_doc(topic)
+        recall_hits = vector_svc.hybrid_search(
+            topic, top_k=15, publish_after_ts=cutoff_ts,
+            extra_queries=[seed_hyde] if seed_hyde else None,
+        )
+        recall_hits = [h for h in recall_hits if h["score"] >= MIN_SCORE]
+        forced = 0
+        for h in recall_hits[:15]:
+            aid = h["article_id"]
+            if aid in sampled_ids or aid not in row_by_id:
+                continue
+            r = row_by_id[aid]
+            title_hashes.append(simhash_svc.simhash(r[1]))
+            sampled.append((r[1], r[2]))
+            sampled_ids.add(aid)
+            forced += 1
+        if forced:
+            logger.info("查询种子召回池强制入样 {} 篇", forced)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("查询种子召回失败（不影响主流程）: {}", str(exc)[:80])
     groups = _group_events(category, sampled)
     if not groups:
         return []
