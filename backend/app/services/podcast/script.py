@@ -20,7 +20,9 @@ from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.db.session import SessionLocal
-from app.models.article import Article
+
+# 绞杀者迁移：素材读取已切 v3（旧表 articles 冻结于迁移时点，新浪等新文章仅在 v3）
+from app.models.article_v3 import ArticleV3 as Article
 from app.services.llm.gateway import gateway
 from app.services.news import simhash as simhash_svc
 from app.services.news import vector as vector_svc
@@ -569,7 +571,7 @@ def _hyde_doc(topic: str) -> str | None:
                 "可合理虚构）。只输出导语正文。\n\n话题：" + topic
             )}],
             max_tokens=300,
-            temperature=0.3,
+            temperature=0.0,  # 确定性：同一话题生成相同导语，召回可复现可测试
         )
         text = (resp.choices[0].message.content or "").strip()
         return text or None
@@ -743,9 +745,14 @@ def _search_materials(
     recall_k = top_k * 4
 
     queries = _hyde_doc(topic)
+    # query 改写产物接回检索（第三路）：understand_topic/创建流程的 rag_query
+    # 与原话题互补——原话保密度、改写保规范表述，缓解措辞漂移漏召回
+    extra = [queries] if queries else []
+    if intent and intent.query and intent.query != topic:
+        extra.append(intent.query)
     hits = vector_svc.hybrid_search(
         topic, top_k=recall_k, publish_after_ts=week_ago,
-        extra_queries=[queries] if queries else None,
+        extra_queries=extra or None,
     )
     hits = [h for h in hits if h["score"] >= MIN_SCORE]
     logger.info("具体型 hybrid 检索（{}query）命中 {}", 2 if queries else 1, len(hits))
