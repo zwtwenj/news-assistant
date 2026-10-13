@@ -184,9 +184,10 @@ def _plan(target_minutes: int) -> dict[str, Any]:
 
 _DS_EVAL_MODEL = "deepseek-flash"
 
-# Self-Refine：评审→重写循环两轮（评 v1、评 v2），写手最多三版
-# （v3 为评②不合格后的终版盲写，质量由回归复评把关——退化即回退 v2）
-REFINE_MAX_ROUNDS = 2
+# Self-Refine：写手最多三版、评审最多三次
+# v1 →评①→ 不通过重写 v2 →评②→ 不通过重写 v3 →评③→ 通过则送 TTS；
+# 评③仍不通过 → 不再重写，落 review_failed 交用户决断（确认后送 TTS）
+REFINE_MAX_ROUNDS = 3
 
 _DIM_LABELS = {
     "relevance": "相关性",
@@ -334,8 +335,9 @@ def _self_refine(
 ) -> tuple[str, dict]:
     """Self-Refine（仅单人）：LLM 评 → 只改不达标维度 → 退化回退。
 
-    评审→重写循环两轮（评 v1、评 v2），写手最多三版——v3 为评②仍不合格时
-    按意见的终版盲写，不再评审（质量由回归复评把关，退化即回退 v2）。
+    写手最多三版、评审最多三次：v1 →评①→ 重写 v2 →评②→ 重写 v3 →评③；
+    任一轮全维度 ≥4 即通过（送 TTS）；评③仍不通过则终版 v3 落 review_failed
+    交用户决断。每轮改写后做回归复评，合格维度退化即回退。
     评审对 materials 全文 + 事实卡（素材利用率维度），改写只认 rewrite_evidence
     （事实卡，缺省回退 materials），全程不检索。
     返回 (终版文本, meta)；meta 含 final_version / checks / improved / passed
@@ -357,7 +359,7 @@ def _self_refine(
             logger.warning("Self-Refine: 评审调用失败（score=0），终止 refine")
             break
         if check_round >= REFINE_MAX_ROUNDS:
-            break  # 已评满 3 轮，当前版本为终版
+            break  # 三次评审已满：当前版本为终版（不再重写 → review_failed 交用户决断）
 
         failed = {d: v for d, v in scores.items() if v.get("score", 0) < 4}
         passed = [d for d, v in scores.items() if v.get("score", 0) >= 4]
@@ -791,6 +793,24 @@ def search_materials_routed(
         logger.warning("宏观检索 0 命中，回退精确检索管道")
     hits, intent = _search_materials(topic, top_k, intent=intent_in)
     return hits, intent, "specific"
+
+
+def precheck_materials(
+    topic: str, top_k: int = 5, intent_in: TopicIntent | None = None
+) -> str | None:
+    """创建前素材预检：None = 通过；字符串 = 拒绝原因（直接展示给用户）。
+
+    复用生成阶段同一套检索 + 相关性门禁，在创建时就拦住两种情况——
+    ① 检索 0 命中；② 素材与话题无关（门禁 reject）。
+    避免创建出一个注定失败、只能在详情页看到"没有素材"的播客。
+    intent_in 传入可省一次 query 重写调用（创建流程已算过）。
+    """
+    hits, _intent, _route = search_materials_routed(topic, top_k, intent_in=intent_in)
+    if not hits:
+        return f"新闻库中暂无与「{topic[:20]}」相关的内容，请换个话题或稍后再试"
+    if _check_material_relevance(topic, hits[:top_k]) == "reject":
+        return f"新闻库暂无与「{topic[:20]}」直接相关的报道，建议换个话题或稍后再试"
+    return None
 
 
 def _search_materials(

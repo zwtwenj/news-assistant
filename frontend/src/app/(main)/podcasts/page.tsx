@@ -353,7 +353,7 @@ export default function PodcastWizardPage() {
               {submitting ? (
                 <>
                   <Loader2 className="mr-2 inline size-4 animate-spin" />
-                  提交中…
+                  检查素材中…
                 </>
               ) : (
                 "开始生成 ▶"
@@ -362,7 +362,9 @@ export default function PodcastWizardPage() {
             <p className="font-mono text-[11px] leading-relaxed text-zinc-500">
               每小时限 3 次 · 每天限 10 次
               <br />
-              点击后立即排队，全流程约 1~3 分钟 → 进度见「我的播客」
+              提交前会先校验话题与素材（约 10 秒）；无相关新闻会提示换话题
+              <br />
+              通过后立即排队，全流程约 1~3 分钟 → 进度见「我的播客」
             </p>
           </div>
         </div>

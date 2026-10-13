@@ -49,6 +49,13 @@ def _check_quota(user_id: int) -> None:
     redis_client.expire(day_key, 86400)
 
 
+def _refund_quota(user_id: int) -> None:
+    """预检拒绝时退还配额：用户没拿到播客，不应消耗生成次数。"""
+    now = datetime.now(UTC)
+    redis_client.decr(f"quota:podcast:h:{user_id}:{now:%Y%m%d%H}")
+    redis_client.decr(f"quota:podcast:d:{user_id}:{now:%Y%m%d}")
+
+
 @router.post("", status_code=201)
 def create_podcast(body: PodcastCreate, db: DB, user: CurrentUser) -> PodcastCreateOut:
     _check_quota(user.id)
@@ -58,9 +65,25 @@ def create_podcast(body: PodcastCreate, db: DB, user: CurrentUser) -> PodcastCre
 
     # query 重写前置到创建：标题/检索意图/模板在入库时就绪——
     # 播客一出现就有标题，生成任务只消费这些参数（title/rag_query/template）
-    from app.services.podcast.query_understanding import understand_topic
+    from app.services.podcast.query_understanding import TopicInvalidError, understand_topic
+    from app.services.podcast.script import precheck_materials
 
-    intent = understand_topic(body.topic_prompt)
+    # ① 话题自检：乱码/无意义 → 拒绝（不创建播客，退还配额）
+    try:
+        intent = understand_topic(body.topic_prompt)
+    except TopicInvalidError as exc:
+        _refund_quota(user.id)
+        raise HTTPException(
+            status_code=422,
+            detail=f"话题无法理解（{exc}），请重新描述你想聊的内容",
+        ) from exc
+
+    # ② 素材预检：检索 0 命中 / 素材与话题无关 → 拒绝
+    # （否则会创建一个注定失败、只在详情页显示"没有素材"的播客）
+    reject_reason = precheck_materials(body.topic_prompt, intent_in=intent)
+    if reject_reason:
+        _refund_quota(user.id)
+        raise HTTPException(status_code=422, detail=reject_reason)
 
     p = Podcast(
         user_id=user.id,
